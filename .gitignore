@@ -1,0 +1,222 @@
+# ====================================
+# Dependencies
+# ====================================
+
+# Python virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Node modules
+node_modules/
+.pnp/
+.pnp.js
+
+# ====================================
+# Environment & Secrets
+# ====================================
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env*.local
+*.env
+
+# API keys and secrets
+secrets/
+*.pem
+*.key
+
+# ====================================
+# Build & Output
+# ====================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+# Python lib (not frontend/src/lib)
+/lib/
+/lib64/
+backend/lib/
+backend/lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Next.js
+.next/
+out/
+.vercel
+
+# General build
+*.manifest
+*.spec
+
+# ====================================
+# IDE & Editor
+# ====================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains (PyCharm, WebStorm)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Cursor
+.cursor/
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ====================================
+# OS Generated
+# ====================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+
+# ====================================
+# Testing & Coverage
+# ====================================
+
+# Python
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# JavaScript/TypeScript
+coverage/
+.nyc_output/
+
+# ====================================
+# Logs & Debug
+# ====================================
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Debug files
+llm_input_*.txt
+llm_output_*.txt
+
+# ====================================
+# Data & Cache
+# ====================================
+
+# Python cache
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.ruff_cache/
+
+# Next.js cache
+.next/cache/
+
+# Misc cache
+.cache/
+*.cache
+
+# Data files (if large/sensitive)
+*.csv
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+*.sqlite
+*.db
+
+# ====================================
+# Project Specific
+# ====================================
+
+# Scraped data
+listing_data.json
+structured_output.py
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# TypeScript build info
+*.tsbuildinfo
+next-env.d.ts
+
+# Vercel
+.vercel
+
+# Turborepo
+.turbo
+
+# ====================================
+# Documentation (auto-generated)
+# ====================================
+
+# Sphinx documentation
+docs/_build/
+
+# ====================================
+# Temporary Files
+# ====================================
+
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+
