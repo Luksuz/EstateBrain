@@ -1,12 +1,30 @@
 import asyncio
 import threading
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Type
 from dataclasses import dataclass
 
 from ..models.scrape_job import JobStatus, ScrapeJobUpdate
 from ..services.firecrawl import FirecrawlService
 from ..services.parser import ListingParser
+from ..services.crozilla_parser import CrozillaListingParser
 from ..services.supabase import SupabaseService
+
+
+def get_parser_for_url(url: str) -> Type:
+    """
+    Get the appropriate parser class based on the URL domain.
+    
+    Args:
+        url: The listing URL
+        
+    Returns:
+        Parser class (ListingParser or CrozillaListingParser)
+    """
+    if "crozilla.com" in url:
+        return CrozillaListingParser
+    else:
+        # Default to njuskalo parser
+        return ListingParser
 
 # Maximum concurrent Firecrawl requests
 MAX_CONCURRENT_SCRAPES = 5
@@ -30,6 +48,7 @@ async def scrape_single_url(
 ) -> ScrapeResult:
     """
     Scrape a single URL with semaphore-controlled concurrency.
+    Automatically detects the source (njuskalo/crozilla) and uses the appropriate parser.
     
     Args:
         url: The listing URL to scrape
@@ -43,17 +62,36 @@ async def scrape_single_url(
         ScrapeResult with success status and any error message
     """
     async with semaphore:
-        print(f"[Scraper] Processing URL: {url}")
+        # Determine which parser to use based on URL
+        parser_class = get_parser_for_url(url)
+        source_name = "crozilla" if parser_class == CrozillaListingParser else "njuskalo"
+        print(f"[Scraper] Processing URL ({source_name}): {url}")
+        
         try:
             # Fetch HTML content (async)
             html_content = await firecrawl.fetch_html(url)
-            
+            # Save HTML to disk for debugging/auditing
             if html_content:
-                print(f"[Scraper] Got HTML for {url}, parsing with LLM...")
-                # Parse the HTML using LLM classifier (async) with location context
-                listing_data = await ListingParser.parse(html_content, url, location_context=location_context)
+                print(f"[Scraper] Got HTML for {url} (length: {len(html_content)})")
+                # Try to derive a safe filename from the URL
+                import hashlib, os
+                html_dir = "scraped_html"
+                os.makedirs(html_dir, exist_ok=True)
+                url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
+                filename = os.path.join(html_dir, f"{url_hash}.html")
+                try:
+                    with open(filename, "w", encoding="utf-8") as html_file:
+                        html_file.write(html_content)
+                    print(f"[Scraper] Saved HTML to {filename}")
+                except Exception as e:
+                    print(f"[Scraper] Failed to save HTML for {url}: {e}")
+            else:
+                print(f"[Scraper] No HTML fetched for {url} (empty response)")
+            if html_content:
+                print(f"[Scraper] Got HTML for {url}, parsing with {source_name} parser...")
+                # Parse the HTML using appropriate parser with location context
+                listing_data = await parser_class.parse(html_content, url, location_context=location_context)
                 listing_data.scrape_job_id = job_id
-                
                 # Save to database (upsert to handle duplicates)
                 await supabase.upsert_listing(listing_data)
                 print(f"[Scraper] Saved listing for {url}")

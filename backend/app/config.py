@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     
     # OpenRouter (LLM)
     openrouter_api_key: str = "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"
-    openrouter_model_name: str = "google/gemini-3-pro-preview"
+    openrouter_model_name: str = "google/gemini-2.5-flash"
     
     # CORS
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]

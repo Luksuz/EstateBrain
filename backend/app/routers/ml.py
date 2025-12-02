@@ -2,165 +2,103 @@
 Machine Learning API endpoints for price prediction and analysis.
 """
 
-from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from typing import Optional
+from collections import defaultdict
 
-from ..services.ml_service import get_ml_service, ModelType, ModelResult, CorrelationResult
+from fastapi import APIRouter, HTTPException, Query
+
+from ..services.ml_service import get_ml_service, ModelType
 from ..services.supabase import SupabaseService
-from ..models.listing import ListingFilter
+from ..services.ml_router_helpers import (
+    get_filtered_listings,
+    calculate_deal_score,
+    build_hidden_layers,
+    analyze_listings_for_deals,
+    build_features_from_request,
+    build_confidence_note,
+    fallback_price_prediction,
+    calculate_similarity_scores,
+    format_similar_listing,
+    get_available_models,
+)
+from ..services.deduplication import get_deduplication_service
+from ..models.ml import (
+    # Training
+    TrainRequest,
+    ModelResultResponse,
+    FeatureSet,
+    FeatureSetInfo,
+    FeatureSetComparisonResult,
+    CompareFeatureSetsRequest,
+    CompareFeatureSetsResponse,
+    FEATURE_SET_DEFINITIONS,
+    # Predictions
+    PredictRequest,
+    PredictResponse,
+    PredictFromUrlRequest,
+    PredictFromUrlResponse,
+    ManualPredictRequest,
+    RawDataPredictRequest,
+    RawDataPredictResponse,
+    RepredictRequest,
+    RepredictResponse,
+    # Correlation & Stats
+    CorrelationResponse,
+    StatsResponse,
+    # Deals
+    DealsResponse,
+    # Similarity
+    SimilaritySearchRequest,
+    SimilaritySearchResponse,
+    # Deduplication
+    DuplicateListing,
+    DuplicateCandidate,
+    FindDuplicatesRequest,
+    FindDuplicatesResponse,
+    ResolveDuplicateRequest,
+    ResolveDuplicateResponse,
+    DuplicateGroup,
+    DuplicateGroupsResponse,
+)
 
 router = APIRouter()
 
 
-class TrainRequest(BaseModel):
-    """Request body for model training."""
-    model_type: str = Field(..., description="Model type (see /models endpoint for full list)")
-    test_size: float = Field(0.2, ge=0.1, le=0.5, description="Test set proportion")
-    cv_folds: int = Field(5, ge=2, le=10, description="Cross-validation folds")
-    
-    # Regularization params (Ridge, Lasso, ElasticNet, SVR)
-    alpha: Optional[float] = Field(1.0, ge=0.001, le=100, description="Regularization strength")
-    l1_ratio: Optional[float] = Field(0.5, ge=0, le=1, description="ElasticNet L1/L2 mix (0=Ridge, 1=Lasso)")
-    
-    # Tree-based params
-    max_depth: Optional[int] = Field(10, ge=1, le=50, description="Tree max depth")
-    n_estimators: Optional[int] = Field(100, ge=10, le=500, description="Number of trees/estimators")
-    learning_rate: Optional[float] = Field(0.1, ge=0.01, le=1.0, description="Boosting learning rate")
-    
-    # KNN params
-    n_neighbors: Optional[int] = Field(5, ge=1, le=50, description="KNN neighbors")
-    
-    # SVR params
-    C: Optional[float] = Field(1.0, ge=0.01, le=100, description="SVR regularization")
-    kernel: Optional[str] = Field("rbf", description="SVR kernel (rbf, linear, poly)")
-    
-    # MLP (Neural Network) params
-    hidden_layer_1: Optional[int] = Field(100, ge=10, le=500, description="Neurons in first hidden layer")
-    hidden_layer_2: Optional[int] = Field(50, ge=0, le=500, description="Neurons in second hidden layer (0 to disable)")
-    activation: Optional[str] = Field("relu", description="Activation function (relu, tanh, logistic)")
-    learning_rate_init: Optional[float] = Field(0.001, ge=0.0001, le=0.1, description="Initial learning rate")
-    max_iter: Optional[int] = Field(500, ge=100, le=2000, description="Max iterations")
-    
-    # Data filters
-    min_price: Optional[float] = None
-    max_price: Optional[float] = None
-    min_area: Optional[float] = None
-    max_area: Optional[float] = None
-    location_district: Optional[str] = None
-    
-    # Exclusion filters
-    exclude_new_construction: Optional[bool] = Field(False, description="Exclude new construction properties")
-    only_new_construction: Optional[bool] = Field(False, description="Only include new construction properties")
+# ==================== TRAINING ====================
 
-
-class PredictRequest(BaseModel):
-    """Request body for price prediction."""
-    model_type: str = Field(..., description="Model type to use")
-    living_area_m2: float = Field(..., ge=10, le=1000)
-    bedroom_count: int = Field(1, ge=0, le=20)
-    bathroom_count: int = Field(1, ge=0, le=10)
-    year_built: Optional[int] = Field(None, ge=1900, le=2030)
-    location_city: Optional[str] = None
-    construction_phase: Optional[str] = None
-    heating_system: Optional[str] = None
-    parking_type: Optional[str] = None
-    is_new_construction: Optional[bool] = False
-
-
-class ModelResultResponse(BaseModel):
-    """Response for model training."""
-    model_type: str
-    r2_score: float
-    rmse: float
-    mae: float
-    cv_scores: List[float]
-    cv_mean: float
-    cv_std: float
-    feature_importance: Optional[Dict[str, float]] = None
-    coefficients: Optional[Dict[str, float]] = None
-    predictions: Optional[List[float]] = None
-    actual: Optional[List[float]] = None
-    sample_count: int
-
-
-class CorrelationResponse(BaseModel):
-    """Response for correlation matrix."""
-    correlation_matrix: Dict[str, Dict[str, float]]
-    target_correlations: Dict[str, float]
-    feature_names: List[str]
-    sample_count: int
-
-
-class StatsResponse(BaseModel):
-    """Response for statistics."""
-    total_count: int
-    avg_price: float
-    median_price: float
-    min_price: float
-    max_price: float
-    avg_area: float
-    median_area: float
-    avg_bedrooms: float
-    cities: List[str]
-    city_counts: Dict[str, int]
-    construction_phase_counts: Dict[str, int]
-    new_construction_pct: float
-
-
-class PredictResponse(BaseModel):
-    """Response for prediction."""
-    predicted_price: float
-    model_type: str
-
-
-async def _get_filtered_listings(
-    min_price: Optional[float] = None,
-    max_price: Optional[float] = None,
-    min_area: Optional[float] = None,
-    max_area: Optional[float] = None,
-    location_district: Optional[str] = None,
-    exclude_new_construction: bool = False,
-    only_new_construction: bool = False,
-) -> List[Dict]:
-    """Fetch listings from database with optional filters.
-    
-    Always filters out outliers:
-    - price_eur < 10000 (invalid/placeholder prices)
-    - living_area_m2 < 10 (invalid areas)
+@router.get("/feature-sets")
+async def get_feature_sets():
     """
-    supabase = SupabaseService()
+    Get available feature sets for model training.
     
-    # Build query
-    query = supabase.client.table("listings").select("*")
+    Feature sets allow training with different feature combinations:
+    - minimal: Just area + bedrooms (2 features)
+    - core: Area, bedrooms, bathrooms, renovation (4 features)
+    - standard: Core + new_construction, garage (6 features)
+    - numeric: All numeric features, no location encoding
+    - full: All features including location (one-hot encoded)
+    """
+    feature_sets = []
+    for fs in FeatureSet:
+        if fs == FeatureSet.CUSTOM:
+            continue  # Skip custom as it needs user-provided features
+        
+        config = FEATURE_SET_DEFINITIONS[fs]
+        all_features = (
+            config["numeric"] + 
+            config["derived"] + 
+            config["boolean"] + 
+            config["categorical"]
+        )
+        
+        feature_sets.append(FeatureSetInfo(
+            name=fs.value,
+            description=config["description"],
+            feature_count=len(all_features),
+            features=all_features,
+        ))
     
-    # Always filter out outliers (invalid data)
-    query = query.gte("price_eur", 10000)  # Min €10k
-    query = query.gte("living_area_m2", 10)  # Min 10m²
-    
-    # Apply user filters on top of outlier filtering
-    if min_price is not None and min_price > 10000:
-        query = query.gte("price_eur", min_price)
-    if max_price is not None:
-        query = query.lte("price_eur", max_price)
-    if min_area is not None:
-        query = query.gte("living_area_m2", min_area)
-    if max_area is not None:
-        query = query.lte("living_area_m2", max_area)
-    if location_district:
-        query = query.ilike("location_district", f"%{location_district}%")
-    
-    # Construction type filters
-    if exclude_new_construction:
-        query = query.eq("is_new_construction", False)
-    elif only_new_construction:
-        query = query.eq("is_new_construction", True)
-    
-    # Filter out null prices
-    query = query.not_.is_("price_eur", "null")
-    
-    result = query.execute()
-    return result.data
+    return {"feature_sets": feature_sets}
 
 
 @router.post("/train", response_model=ModelResultResponse)
@@ -168,12 +106,17 @@ async def train_model(request: TrainRequest):
     """
     Train a machine learning model on filtered listings data.
     
+    Feature sets:
+    - minimal: Just area + bedrooms (simplest, often performs well!)
+    - core: Area, bedrooms, bathrooms, renovation
+    - standard: Core + new_construction, garage
+    - numeric: All numeric features without location
+    - full: All features including location (default)
+    
     Supported models:
-    - linear_regression: Linear Regression
-    - knn: K-Nearest Neighbors
-    - decision_tree: Decision Tree
-    - xgboost: XGBoost (or Gradient Boosting fallback)
-    - gradient_boosting: Gradient Boosting
+    - linear_regression, ridge, lasso, elastic_net, bayesian_ridge
+    - decision_tree, random_forest, gradient_boosting, xgboost
+    - knn, svr, mlp
     """
     try:
         model_type = ModelType(request.model_type)
@@ -184,8 +127,7 @@ async def train_model(request: TrainRequest):
                    f"Valid types: {[m.value for m in ModelType]}"
         )
     
-    # Get filtered listings
-    listings = await _get_filtered_listings(
+    listings = await get_filtered_listings(
         min_price=request.min_price,
         max_price=request.max_price,
         min_area=request.min_area,
@@ -204,34 +146,34 @@ async def train_model(request: TrainRequest):
     ml_service = get_ml_service()
     
     try:
-        # Build hidden layers tuple for MLP
-        hidden_layers = (request.hidden_layer_1,)
-        if request.hidden_layer_2 and request.hidden_layer_2 > 0:
-            hidden_layers = (request.hidden_layer_1, request.hidden_layer_2)
+        hidden_layers = build_hidden_layers(request.hidden_layer_1, request.hidden_layer_2)
+        
+        # Get feature set config
+        feature_set_value = request.feature_set.value if isinstance(request.feature_set, FeatureSet) else request.feature_set
         
         result = ml_service.train_and_evaluate(
             listings=listings,
             model_type=model_type,
             test_size=request.test_size,
             cv_folds=request.cv_folds,
-            # Regularization params
+            feature_set=feature_set_value,
+            custom_features=request.custom_features,
             alpha=request.alpha,
             l1_ratio=request.l1_ratio,
-            # Tree params
             max_depth=request.max_depth,
             n_estimators=request.n_estimators,
             learning_rate=request.learning_rate,
-            # KNN params
             n_neighbors=request.n_neighbors,
-            # SVR params
             C=request.C,
             kernel=request.kernel,
-            # MLP params
             hidden_layers=hidden_layers,
             activation=request.activation,
             learning_rate_init=request.learning_rate_init,
             max_iter=request.max_iter,
         )
+        
+        # Get features used
+        features_used = ml_service.feature_names_out if ml_service.feature_names_out else []
         
         return ModelResultResponse(
             model_type=result.model_type,
@@ -246,10 +188,113 @@ async def train_model(request: TrainRequest):
             predictions=result.predictions,
             actual=result.actual,
             sample_count=len(listings),
+            feature_set=feature_set_value,
+            features_used=features_used,
+            feature_count=len(features_used),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/compare-feature-sets", response_model=CompareFeatureSetsResponse)
+async def compare_feature_sets(request: CompareFeatureSetsRequest):
+    """
+    Compare model performance across different feature sets.
+    
+    This helps identify the optimal feature combination for your data.
+    Often, simpler feature sets (minimal/core) perform just as well as full feature sets,
+    with less risk of overfitting.
+    """
+    try:
+        model_type = ModelType(request.model_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid model type: {request.model_type}. "
+                   f"Valid types: {[m.value for m in ModelType]}"
+        )
+    
+    listings = await get_filtered_listings(
+        min_price=request.min_price,
+        max_price=request.max_price,
+    )
+    
+    if len(listings) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough data for comparison. Got {len(listings)} listings, need at least 10."
+        )
+    
+    ml_service = get_ml_service()
+    results = []
+    
+    for feature_set in request.feature_sets:
+        if feature_set == FeatureSet.CUSTOM:
+            continue  # Skip custom
+        
+        try:
+            feature_set_value = feature_set.value
+            result = ml_service.train_and_evaluate(
+                listings=listings,
+                model_type=model_type,
+                test_size=request.test_size,
+                cv_folds=request.cv_folds,
+                feature_set=feature_set_value,
+            )
+            
+            config = FEATURE_SET_DEFINITIONS[feature_set]
+            all_features = config["numeric"] + config["derived"] + config["boolean"] + config["categorical"]
+            
+            results.append(FeatureSetComparisonResult(
+                feature_set=feature_set_value,
+                feature_count=len(ml_service.feature_names_out),
+                features=ml_service.feature_names_out,
+                r2_score=result.r2_score,
+                rmse=result.rmse,
+                mae=result.mae,
+                cv_mean=result.cv_mean,
+                cv_std=result.cv_std,
+            ))
+        except Exception as e:
+            print(f"[ML] Error with feature set {feature_set}: {e}")
+            continue
+    
+    if not results:
+        raise HTTPException(status_code=500, detail="Failed to train any feature set")
+    
+    # Find best feature set by R² score
+    best_result = max(results, key=lambda r: r.r2_score)
+    
+    # Generate recommendation
+    if best_result.feature_set == "minimal":
+        recommendation = "Minimal features (area + bedrooms) perform best! Your model benefits from simplicity."
+    elif best_result.feature_set == "core":
+        recommendation = "Core features work best. Adding more features may cause overfitting."
+    elif best_result.feature_set in ["numeric", "standard"]:
+        recommendation = f"{best_result.feature_set.title()} features are optimal. Consider this as your default."
+    else:
+        recommendation = "Full feature set performs best. You have enough data to use all features."
+    
+    # Add comparison insight
+    minimal_r2 = next((r.r2_score for r in results if r.feature_set == "minimal"), None)
+    full_r2 = next((r.r2_score for r in results if r.feature_set == "full"), None)
+    
+    if minimal_r2 and full_r2:
+        diff = full_r2 - minimal_r2
+        if abs(diff) < 0.02:
+            recommendation += f" Note: Minimal and full features have similar R² (diff: {diff:.3f}). Prefer simpler model."
+    
+    return CompareFeatureSetsResponse(
+        model_type=request.model_type,
+        sample_count=len(listings),
+        results=sorted(results, key=lambda r: r.r2_score, reverse=True),
+        best_feature_set=best_result.feature_set,
+        best_r2_score=best_result.r2_score,
+        recommendation=recommendation,
+    )
+
+
+# ==================== CORRELATION & STATS ====================
 
 @router.get("/correlation", response_model=CorrelationResponse)
 async def get_correlation_matrix(
@@ -265,7 +310,7 @@ async def get_correlation_matrix(
     Get correlation matrix with price as the target variable.
     Shows which features have the strongest correlation with price.
     """
-    listings = await _get_filtered_listings(
+    listings = await get_filtered_listings(
         min_price=min_price,
         max_price=max_price,
         min_area=min_area,
@@ -306,10 +351,8 @@ async def get_statistics(
     exclude_new_construction: bool = Query(False),
     only_new_construction: bool = Query(False),
 ):
-    """
-    Get summary statistics for listings.
-    """
-    listings = await _get_filtered_listings(
+    """Get summary statistics for listings."""
+    listings = await get_filtered_listings(
         min_price=min_price,
         max_price=max_price,
         min_area=min_area,
@@ -324,6 +367,8 @@ async def get_statistics(
     
     return StatsResponse(**stats)
 
+
+# ==================== PREDICTIONS ====================
 
 @router.post("/predict", response_model=PredictResponse)
 async def predict_price(request: PredictRequest):
@@ -344,7 +389,7 @@ async def predict_price(request: PredictRequest):
     try:
         features = {
             'living_area_m2': request.living_area_m2,
-            'metadata_area_m2': request.living_area_m2,  # Use same as living area
+            'metadata_area_m2': request.living_area_m2,
             'outdoor_area_m2': 0,
             'bedroom_count': request.bedroom_count,
             'bathroom_count': request.bathroom_count,
@@ -368,373 +413,6 @@ async def predict_price(request: PredictRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/models")
-async def list_available_models():
-    """List all available model types and their descriptions."""
-    return {
-        "models": [
-            # === Linear Models ===
-            {
-                "type": ModelType.LINEAR_REGRESSION.value,
-                "name": "Linear Regression",
-                "category": "linear",
-                "description": "Simple baseline. Shows raw feature coefficients.",
-                "params": [],
-                "recommended": False
-            },
-            {
-                "type": ModelType.RIDGE.value,
-                "name": "Ridge Regression",
-                "category": "linear",
-                "description": "L2 regularization prevents overfitting. Best for small datasets.",
-                "params": ["alpha"],
-                "recommended": True
-            },
-            {
-                "type": ModelType.LASSO.value,
-                "name": "Lasso Regression",
-                "category": "linear",
-                "description": "L1 regularization. Automatically selects important features.",
-                "params": ["alpha"],
-                "recommended": False
-            },
-            {
-                "type": ModelType.ELASTIC_NET.value,
-                "name": "Elastic Net",
-                "category": "linear",
-                "description": "Combines Ridge + Lasso. Good balance.",
-                "params": ["alpha", "l1_ratio"],
-                "recommended": False
-            },
-            {
-                "type": ModelType.BAYESIAN_RIDGE.value,
-                "name": "Bayesian Ridge",
-                "category": "linear",
-                "description": "Probabilistic. Provides uncertainty estimates.",
-                "params": [],
-                "recommended": False
-            },
-            # === Tree-based Models ===
-            {
-                "type": ModelType.DECISION_TREE.value,
-                "name": "Decision Tree",
-                "category": "tree",
-                "description": "Simple tree. Shows feature importance but can overfit.",
-                "params": ["max_depth"],
-                "recommended": False
-            },
-            {
-                "type": ModelType.RANDOM_FOREST.value,
-                "name": "Random Forest",
-                "category": "tree",
-                "description": "Ensemble of trees. Robust and handles non-linearity.",
-                "params": ["n_estimators", "max_depth"],
-                "recommended": True
-            },
-            {
-                "type": ModelType.GRADIENT_BOOSTING.value,
-                "name": "Gradient Boosting",
-                "category": "tree",
-                "description": "Sequential boosting. Often best performance.",
-                "params": ["n_estimators", "max_depth", "learning_rate"],
-                "recommended": True
-            },
-            {
-                "type": ModelType.XGBOOST.value,
-                "name": "XGBoost",
-                "category": "tree",
-                "description": "Optimized gradient boosting. Industry standard.",
-                "params": ["n_estimators", "max_depth", "learning_rate"],
-                "recommended": True
-            },
-            # === Other Models ===
-            {
-                "type": ModelType.KNN.value,
-                "name": "K-Nearest Neighbors",
-                "category": "other",
-                "description": "Predicts based on similar properties.",
-                "params": ["n_neighbors"],
-                "recommended": False
-            },
-            {
-                "type": ModelType.SVR.value,
-                "name": "Support Vector Regression",
-                "category": "other",
-                "description": "Good for small datasets. Handles non-linearity.",
-                "params": ["C", "kernel"],
-                "recommended": True
-            },
-            # === Neural Networks ===
-            {
-                "type": ModelType.MLP.value,
-                "name": "Multi-Layer Perceptron (Neural Network)",
-                "category": "neural_network",
-                "description": "Deep learning model. Can capture complex non-linear patterns. Best for larger datasets.",
-                "params": ["hidden_layer_1", "hidden_layer_2", "activation", "learning_rate_init", "max_iter"],
-                "recommended": True
-            },
-        ]
-    }
-
-
-class DealAnalysis(BaseModel):
-    """Individual deal analysis."""
-    listing_id: str
-    title: str
-    url: str
-    location_district: Optional[str]
-    actual_price: float
-    predicted_price: float
-    difference: float  # actual - predicted
-    difference_pct: float  # percentage difference
-    deal_score: str  # "great_deal", "good_deal", "fair", "overpriced", "very_overpriced"
-    living_area_m2: Optional[float]
-    bedroom_count: Optional[int]
-    bathroom_count: Optional[int]
-    year_built: Optional[int]
-    is_new_construction: bool
-    image_url: Optional[str]
-
-
-class DealsResponse(BaseModel):
-    """Response for deal analysis."""
-    model_used: str
-    total_analyzed: int
-    good_deals: List[DealAnalysis]
-    bad_deals: List[DealAnalysis]
-    average_error_pct: float
-
-
-@router.get("/deals", response_model=DealsResponse)
-async def analyze_deals(
-    model_type: str = Query("ridge", description="Model type to use for predictions"),
-    min_price: Optional[float] = Query(None),
-    max_price: Optional[float] = Query(None),
-    exclude_new_construction: bool = Query(False),
-    location_district: Optional[str] = Query(None),
-    top_n: int = Query(10, ge=1, le=50, description="Number of deals to return"),
-):
-    """
-    Analyze listings to find good deals (underpriced) and bad deals (overpriced).
-    
-    Uses a trained ML model to predict fair prices, then compares with actual prices.
-    
-    Deal scores:
-    - great_deal: >20% below predicted price
-    - good_deal: 10-20% below predicted
-    - fair: within ±10% of predicted
-    - overpriced: 10-20% above predicted
-    - very_overpriced: >20% above predicted
-    """
-    import numpy as np
-    
-    try:
-        model_type_enum = ModelType(model_type)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid model type: {model_type}. Must be one of: {[mt.value for mt in ModelType]}"
-        )
-    
-    # Get listings
-    listings = await _get_filtered_listings(
-        min_price=min_price,
-        max_price=max_price,
-        exclude_new_construction=exclude_new_construction,
-        location_district=location_district,
-    )
-    
-    if len(listings) < 20:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Not enough listings for deal analysis. Got {len(listings)}, need at least 20."
-        )
-    
-    # Train model on all data
-    ml_service = get_ml_service()
-    
-    try:
-        # Train the model
-        ml_service.train_and_evaluate(
-            listings=listings,
-            model_type=model_type_enum,
-            test_size=0.1,  # Use most data for training
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Model training failed: {str(e)}")
-    
-    # Now predict for each listing and compare
-    import pandas as pd
-    
-    df = ml_service._prepare_dataframe(listings)
-    X, y, feature_names, df_valid = ml_service._prepare_features(df, fit=False)
-    
-    # Get predictions
-    model = ml_service.models.get(model_type_enum)
-    if model is None:
-        raise HTTPException(status_code=500, detail="Model not found after training")
-    
-    predictions = model.predict(X)
-    
-    # Analyze each listing
-    deals = []
-    for i, (idx, row) in enumerate(df_valid.iterrows()):
-        actual = float(row['price_eur'])
-        predicted = float(predictions[i])
-        difference = actual - predicted
-        diff_pct = (difference / predicted) * 100 if predicted > 0 else 0
-        
-        # Determine deal score
-        if diff_pct <= -20:
-            deal_score = "great_deal"
-        elif diff_pct <= -10:
-            deal_score = "good_deal"
-        elif diff_pct <= 10:
-            deal_score = "fair"
-        elif diff_pct <= 20:
-            deal_score = "overpriced"
-        else:
-            deal_score = "very_overpriced"
-        
-        # Get image URL from raw listing data
-        listing_data = listings[i] if i < len(listings) else {}
-        images = listing_data.get('images', [])
-        # Images can be dicts with 'src' field or plain strings
-        image_url = None
-        if images:
-            first_image = images[0]
-            if isinstance(first_image, dict):
-                image_url = first_image.get('src') or first_image.get('url')
-            elif isinstance(first_image, str):
-                image_url = first_image
-        
-        deals.append(DealAnalysis(
-            listing_id=str(row.get('id', '')),
-            title=str(row.get('title', 'Unknown')),
-            url=str(row.get('source_url', '')),
-            location_district=row.get('location_district'),
-            actual_price=actual,
-            predicted_price=round(predicted, 0),
-            difference=round(difference, 0),
-            difference_pct=round(diff_pct, 1),
-            deal_score=deal_score,
-            living_area_m2=row.get('living_area_m2'),
-            bedroom_count=int(row['bedroom_count']) if pd.notna(row.get('bedroom_count')) else None,
-            bathroom_count=int(row['bathroom_count']) if pd.notna(row.get('bathroom_count')) else None,
-            year_built=int(row['year_built']) if pd.notna(row.get('year_built')) else None,
-            is_new_construction=bool(row.get('is_new_construction', False)),
-            image_url=image_url,
-        ))
-    
-    # Sort by difference percentage
-    good_deals = sorted(
-        [d for d in deals if d.difference_pct < -5],
-        key=lambda x: x.difference_pct
-    )[:top_n]
-    
-    bad_deals = sorted(
-        [d for d in deals if d.difference_pct > 5],
-        key=lambda x: x.difference_pct,
-        reverse=True
-    )[:top_n]
-    
-    # Calculate average error
-    avg_error = float(np.mean([abs(d.difference_pct) for d in deals]))
-    
-    return DealsResponse(
-        model_used=model_type,
-        total_analyzed=len(deals),
-        good_deals=good_deals,
-        bad_deals=bad_deals,
-        average_error_pct=round(avg_error, 1),
-    )
-
-
-class PredictFromUrlRequest(BaseModel):
-    """Request to predict price from a listing URL."""
-    url: str = Field(..., description="The njuskalo.hr listing URL")
-    model_type: str = Field("ridge", description="Model type to use for prediction")
-
-
-class ManualPredictRequest(BaseModel):
-    """Request body for manual price prediction with custom listing data (no LLM)."""
-    model_type: str = Field("ridge", description="Model type to use for prediction")
-    
-    # Basic info
-    title: Optional[str] = Field(None, description="Listing title")
-    actual_price: Optional[float] = Field(None, description="Listed price in EUR")
-    
-    # Location
-    location_district: Optional[str] = Field(None, description="District/neighborhood")
-    
-    # Property details
-    living_area_m2: float = Field(..., ge=10, le=1000, description="Living area in m²")
-    bedroom_count: int = Field(1, ge=0, le=20, description="Number of bedrooms")
-    bathroom_count: int = Field(1, ge=0, le=10, description="Number of bathrooms")
-    outdoor_area_m2: Optional[float] = Field(None, ge=0, description="Outdoor area in m²")
-    
-    # Building info
-    year_built: Optional[int] = Field(None, ge=1800, le=2030, description="Year built")
-    is_new_construction: bool = Field(False, description="Is new construction")
-    has_garage: bool = Field(False, description="Has garage")
-    
-    # Text for AI analysis (optional)
-    description: Optional[str] = Field(None, description="Listing description text")
-    
-    # Images for AI analysis (optional) - base64 encoded, compressed
-    images: Optional[List[str]] = Field(None, description="Base64 encoded images (max 20)")
-
-
-class RawDataPredictRequest(BaseModel):
-    """Request body for prediction with raw listing data - processed by LLM classifier."""
-    model_type: str = Field("ridge", description="Model type to use for prediction")
-    zupanija: Optional[str] = Field("Varaždinska", description="County for location context")
-    
-    # Raw listing data (like from HTML/JSON scraping)
-    title: Optional[str] = Field(None, description="Listing title")
-    price: Optional[str] = Field(None, description="Price string (e.g., '150.000 €')")
-    ad_id: Optional[str] = Field(None, description="Platform listing ID (Šifra oglasa)")
-    
-    # Highlighted attributes (from the header/summary box)
-    highlighted_attributes: Optional[Dict[str, str]] = Field(
-        None, 
-        description="Key attributes like 'Stambena površina': '75 m²', 'Broj soba': '3'"
-    )
-    
-    # Basic details (from the details section)
-    basic_details: Optional[Dict[str, str]] = Field(
-        None,
-        description="Details like 'Lokacija': 'Varaždinska žup., Varaždin', 'Godina izgradnje': '2020'"
-    )
-    
-    # Full description text
-    description: Optional[str] = Field(None, description="Full listing description text")
-    
-    # Additional info
-    additional_info: Optional[Dict[str, str]] = Field(None, description="Any additional info")
-    category_path: Optional[List[str]] = Field(None, description="Category breadcrumb path")
-    
-    # Images - can be URLs or base64 encoded
-    images: Optional[List[str]] = Field(
-        None, 
-        description="Image URLs or base64 encoded images (max 20). LLM will analyze these for rooms."
-    )
-
-
-class PredictFromUrlResponse(BaseModel):
-    """Response for URL-based price prediction."""
-    url: str
-    title: str
-    actual_price: Optional[float]
-    predicted_price: float
-    difference: Optional[float]
-    difference_pct: Optional[float]
-    deal_score: Optional[str]
-    features_used: Dict[str, Any]
-    model_used: str
-    confidence_note: str
-
-
 @router.post("/predict-url", response_model=PredictFromUrlResponse)
 async def predict_from_url(request: PredictFromUrlRequest):
     """
@@ -749,7 +427,6 @@ async def predict_from_url(request: PredictFromUrlRequest):
     from ..services.firecrawl import FirecrawlService
     from ..services.parser import ListingParser
     
-    # Validate URL
     if "njuskalo.hr" not in request.url:
         raise HTTPException(status_code=400, detail="URL must be from njuskalo.hr")
     
@@ -761,9 +438,8 @@ async def predict_from_url(request: PredictFromUrlRequest):
             detail=f"Invalid model type: {request.model_type}"
         )
     
-    # First, train the model on existing data
-    supabase = SupabaseService()
-    listings = await _get_filtered_listings()
+    # Train the model on existing data
+    listings = await get_filtered_listings()
     
     if len(listings) < 20:
         raise HTTPException(
@@ -790,37 +466,29 @@ async def predict_from_url(request: PredictFromUrlRequest):
         if not html_content:
             raise HTTPException(status_code=400, detail="Failed to fetch listing HTML")
         
-        # Parse the listing using AI classifier
         listing_data = await ListingParser.parse(html_content, request.url)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to scrape listing: {str(e)}")
     
-    # Build feature dict from parsed listing
-    features = {
-        'living_area_m2': listing_data.living_area_m2 or 0,
-        'bedroom_count': listing_data.bedroom_count or 1,
-        'bathroom_count': listing_data.bathroom_count or 1,
-        'outdoor_area_m2': listing_data.outdoor_area_m2 or 0,
-        'is_new_construction': 1.0 if listing_data.is_new_construction else 0.0,
-        'parking_type': listing_data.parking_type.value if listing_data.parking_type else 'UNKNOWN',
-        'location_district': listing_data.location_district or 'Unknown',
-    }
+    # Build features from parsed listing
+    features = build_features_from_request(
+        living_area_m2=listing_data.living_area_m2 or 0,
+        bedroom_count=listing_data.bedroom_count or 1,
+        bathroom_count=listing_data.bathroom_count or 1,
+        outdoor_area_m2=listing_data.outdoor_area_m2,
+        is_new_construction=listing_data.is_new_construction or False,
+        parking_type=listing_data.parking_type.value if listing_data.parking_type else 'UNKNOWN',
+        location_district=listing_data.location_district,
+    )
     
     try:
-        # Use the ML service's predict method which handles preprocessing correctly
         predicted_price = ml_service.predict(model_type_enum, features)
-        
-    except Exception as e:
-        # If preprocessing fails, use a simpler approach
-        # Estimate based on area and average price per m2
-        avg_price_per_m2 = sum(l.get('price_eur', 0) / max(l.get('living_area_m2', 1), 1) for l in listings) / len(listings)
-        predicted_price = (features['living_area_m2'] or 70) * avg_price_per_m2
-    
-    # Get actual price if available
-    actual_price = listing_data.price_eur
+    except Exception:
+        predicted_price = fallback_price_prediction(listings, features['living_area_m2'] or 70)
     
     # Calculate difference
+    actual_price = listing_data.price_eur
     difference = None
     difference_pct = None
     deal_score = None
@@ -828,29 +496,13 @@ async def predict_from_url(request: PredictFromUrlRequest):
     if actual_price and actual_price > 0:
         difference = actual_price - predicted_price
         difference_pct = (difference / predicted_price) * 100 if predicted_price > 0 else 0
-        
-        # Determine deal score
-        if difference_pct <= -20:
-            deal_score = "great_deal"
-        elif difference_pct <= -10:
-            deal_score = "good_deal"
-        elif difference_pct <= 10:
-            deal_score = "fair"
-        elif difference_pct <= 20:
-            deal_score = "overpriced"
-        else:
-            deal_score = "very_overpriced"
+        deal_score = calculate_deal_score(difference_pct)
     
-    # Confidence note based on data quality
-    confidence_notes = []
-    if not features['living_area_m2']:
-        confidence_notes.append("Area not detected")
-    if features['location_district'] == 'Unknown':
-        confidence_notes.append("Location unknown")
-    if not features['bedroom_count']:
-        confidence_notes.append("Bedrooms not detected")
-    
-    confidence_note = ", ".join(confidence_notes) if confidence_notes else "Good confidence"
+    confidence_note = build_confidence_note(
+        living_area_m2=features['living_area_m2'],
+        location_district=features['location_district'],
+        bedroom_count=features['bedroom_count'],
+    )
     
     return PredictFromUrlResponse(
         url=request.url,
@@ -879,13 +531,7 @@ async def predict_manual(request: ManualPredictRequest):
     """
     Predict price from manually input listing data.
     
-    This allows users to input listing details directly (title, description, 
-    area, location, etc.) without needing a URL. Useful for:
-    - Testing hypothetical properties
-    - Properties not listed online
-    - Quick estimates without scraping
-    
-    Images should be base64 encoded and compressed to reduce token usage.
+    This allows users to input listing details directly without needing a URL.
     """
     try:
         model_type_enum = ModelType(request.model_type)
@@ -895,8 +541,7 @@ async def predict_manual(request: ManualPredictRequest):
             detail=f"Invalid model type: {request.model_type}"
         )
     
-    # Train the model on existing data
-    listings = await _get_filtered_listings()
+    listings = await get_filtered_listings()
     
     if len(listings) < 20:
         raise HTTPException(
@@ -915,30 +560,23 @@ async def predict_manual(request: ManualPredictRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model training failed: {str(e)}")
     
-    # Build feature dict from manual input
-    features = {
-        'living_area_m2': request.living_area_m2,
-        'bedroom_count': request.bedroom_count,
-        'bathroom_count': request.bathroom_count,
-        'outdoor_area_m2': request.outdoor_area_m2 or 0,
-        'is_new_construction': 1.0 if request.is_new_construction else 0.0,
-        'has_garage': 1.0 if request.has_garage else 0.0,
-        'location_district': request.location_district or 'Varaždin',
-    }
+    features = build_features_from_request(
+        living_area_m2=request.living_area_m2,
+        bedroom_count=request.bedroom_count,
+        bathroom_count=request.bathroom_count,
+        outdoor_area_m2=request.outdoor_area_m2,
+        is_new_construction=request.is_new_construction,
+        has_garage=request.has_garage,
+        location_district=request.location_district or 'Varaždin',
+    )
     
     try:
-        # Use the ML service's predict method which handles preprocessing correctly
         predicted_price = ml_service.predict(model_type_enum, features)
-        
-    except Exception as e:
-        # Fallback: estimate based on area and average price per m2
-        avg_price_per_m2 = sum(l.get('price_eur', 0) / max(l.get('living_area_m2', 1), 1) for l in listings) / len(listings)
-        predicted_price = features['living_area_m2'] * avg_price_per_m2
-    
-    # Get actual price if provided
-    actual_price = request.actual_price
+    except Exception:
+        predicted_price = fallback_price_prediction(listings, features['living_area_m2'])
     
     # Calculate difference
+    actual_price = request.actual_price
     difference = None
     difference_pct = None
     deal_score = None
@@ -946,29 +584,13 @@ async def predict_manual(request: ManualPredictRequest):
     if actual_price and actual_price > 0:
         difference = actual_price - predicted_price
         difference_pct = (difference / predicted_price) * 100 if predicted_price > 0 else 0
-        
-        # Determine deal score
-        if difference_pct <= -20:
-            deal_score = "great_deal"
-        elif difference_pct <= -10:
-            deal_score = "good_deal"
-        elif difference_pct <= 10:
-            deal_score = "fair"
-        elif difference_pct <= 20:
-            deal_score = "overpriced"
-        else:
-            deal_score = "very_overpriced"
+        deal_score = calculate_deal_score(difference_pct)
     
-    # Confidence note based on data quality
-    confidence_notes = []
-    if request.living_area_m2 < 20:
-        confidence_notes.append("Very small area")
-    if not request.location_district:
-        confidence_notes.append("Location assumed (Varaždin)")
-    if not request.bedroom_count:
-        confidence_notes.append("No bedrooms specified")
-    
-    confidence_note = ", ".join(confidence_notes) if confidence_notes else "Good confidence"
+    confidence_note = build_confidence_note(
+        living_area_m2=request.living_area_m2,
+        location_district=request.location_district,
+        bedroom_count=request.bedroom_count,
+    )
     
     return PredictFromUrlResponse(
         url="manual-input",
@@ -992,38 +614,12 @@ async def predict_manual(request: ManualPredictRequest):
     )
 
 
-class RawDataPredictResponse(BaseModel):
-    """Response for raw data prediction with LLM classification."""
-    title: str
-    actual_price: Optional[float]
-    predicted_price: float
-    difference: Optional[float]
-    difference_pct: Optional[float]
-    deal_score: Optional[str]
-    features_used: Dict[str, Any]
-    model_used: str
-    confidence_note: str
-    
-    # Additional LLM-extracted data
-    classified_data: Dict[str, Any] = Field(description="Full classified data from LLM")
-    rooms: Optional[List[Dict[str, Any]]] = Field(None, description="Rooms detected from images/description")
-
-
 @router.post("/predict-from-data", response_model=RawDataPredictResponse)
 async def predict_from_raw_data(request: RawDataPredictRequest):
     """
     Predict price from raw listing data using LLM classifier.
     
-    This endpoint mimics the full URL scraping workflow but with manual data input:
-    1. Takes raw listing data (title, description, attributes, images)
-    2. Passes it through the LLM classifier to extract structured data
-    3. Analyzes images for room detection, condition, features
-    4. Uses trained ML model to predict fair market price
-    
-    Perfect for:
-    - Testing listings from other sources
-    - Analyzing properties without a URL
-    - Debugging/verifying the classification process
+    This endpoint mimics the full URL scraping workflow but with manual data input.
     """
     from ..services.classifier import ListingClassifier
     from ..locations_config.locations import get_location_context
@@ -1036,8 +632,7 @@ async def predict_from_raw_data(request: RawDataPredictRequest):
             detail=f"Invalid model type: {request.model_type}"
         )
     
-    # Train the model on existing data
-    listings = await _get_filtered_listings()
+    listings = await get_filtered_listings()
     
     if len(listings) < 20:
         raise HTTPException(
@@ -1056,7 +651,7 @@ async def predict_from_raw_data(request: RawDataPredictRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model training failed: {str(e)}")
     
-    # Build raw data dict for classifier (same format as scraper output)
+    # Build raw data dict for classifier
     raw_data = {
         "title": request.title,
         "price": request.price,
@@ -1068,18 +663,15 @@ async def predict_from_raw_data(request: RawDataPredictRequest):
         "category_path": request.category_path or [],
     }
     
-    # Process images - convert base64 to image objects if needed
     if request.images:
-        # If images are URLs, format them for the classifier
-        # If they're base64, the classifier will handle them
         raw_data["images"] = [
             {"src": img} if img.startswith("http") else {"src": img}
-            for img in request.images[:20]  # Max 20 images
+            for img in request.images[:20]
         ]
     else:
         raw_data["images"] = []
     
-    # Get location context for the classifier
+    # Get location context
     location_context = None
     if request.zupanija:
         loc_ctx = get_location_context(request.zupanija)
@@ -1099,27 +691,23 @@ async def predict_from_raw_data(request: RawDataPredictRequest):
         raise HTTPException(status_code=500, detail=f"LLM classification failed: {str(e)}")
     
     # Extract features for ML prediction
-    features = {
-        'living_area_m2': classified.dimensions.description_living_area_m2 or classified.dimensions.metadata_area_m2 or 0,
-        'bedroom_count': classified.building_specs.bedroom_count or 1,
-        'bathroom_count': classified.building_specs.bathroom_count or 1,
-        'outdoor_area_m2': classified.dimensions.outdoor_area_m2 or 0,
-        'is_new_construction': 1.0 if classified.building_specs.is_new_construction else 0.0,
-        'parking_type': classified.building_specs.parking_type.value if classified.building_specs.parking_type else 'UNKNOWN',
-        'location_district': classified.location.district or classified.location.city or 'Unknown',
-    }
+    features = build_features_from_request(
+        living_area_m2=classified.dimensions.description_living_area_m2 or classified.dimensions.metadata_area_m2 or 0,
+        bedroom_count=classified.building_specs.bedroom_count or 1,
+        bathroom_count=classified.building_specs.bathroom_count or 1,
+        outdoor_area_m2=classified.dimensions.outdoor_area_m2,
+        is_new_construction=classified.building_specs.is_new_construction or False,
+        parking_type=classified.building_specs.parking_type.value if classified.building_specs.parking_type else 'UNKNOWN',
+        location_district=classified.location.district or classified.location.city or 'Unknown',
+    )
     
     try:
         predicted_price = ml_service.predict(model_type_enum, features)
-    except Exception as e:
-        # Fallback: estimate based on area and average price per m2
-        avg_price_per_m2 = sum(l.get('price_eur', 0) / max(l.get('living_area_m2', 1), 1) for l in listings) / len(listings)
-        predicted_price = (features['living_area_m2'] or 70) * avg_price_per_m2
+    except Exception:
+        predicted_price = fallback_price_prediction(listings, features['living_area_m2'] or 70)
     
-    # Get actual price from classified data
+    # Get actual price
     actual_price = classified.basic_info.price_euros
-    
-    # Calculate difference
     difference = None
     difference_pct = None
     deal_score = None
@@ -1127,30 +715,15 @@ async def predict_from_raw_data(request: RawDataPredictRequest):
     if actual_price and actual_price > 0:
         difference = actual_price - predicted_price
         difference_pct = (difference / predicted_price) * 100 if predicted_price > 0 else 0
-        
-        if difference_pct <= -20:
-            deal_score = "great_deal"
-        elif difference_pct <= -10:
-            deal_score = "good_deal"
-        elif difference_pct <= 10:
-            deal_score = "fair"
-        elif difference_pct <= 20:
-            deal_score = "overpriced"
-        else:
-            deal_score = "very_overpriced"
+        deal_score = calculate_deal_score(difference_pct)
     
-    # Confidence note
-    confidence_notes = []
-    if not features['living_area_m2']:
-        confidence_notes.append("Area not detected")
-    if features['location_district'] == 'Unknown':
-        confidence_notes.append("Location unknown")
-    if classified.dimensions.area_conflict_detected:
-        confidence_notes.append("Area conflict detected")
+    confidence_note = build_confidence_note(
+        living_area_m2=features['living_area_m2'],
+        location_district=features['location_district'],
+        area_conflict=classified.dimensions.area_conflict_detected,
+    )
     
-    confidence_note = ", ".join(confidence_notes) if confidence_notes else "Good confidence"
-    
-    # Format rooms for response
+    # Format rooms
     rooms_data = None
     if classified.rooms:
         rooms_data = [
@@ -1166,7 +739,7 @@ async def predict_from_raw_data(request: RawDataPredictRequest):
             for room in classified.rooms
         ]
     
-    # Full classified data
+    # Build classified data response
     classified_dict = {
         "basic_info": {
             "title": classified.basic_info.title,
@@ -1221,33 +794,12 @@ async def predict_from_raw_data(request: RawDataPredictRequest):
     )
 
 
-class RepredictRequest(BaseModel):
-    """Request to re-predict with different model using saved features."""
-    model_type: str = Field(..., description="Model type to use for prediction")
-    features: Dict[str, Any] = Field(..., description="Features from previous prediction")
-    actual_price: Optional[float] = Field(None, description="Actual listed price for comparison")
-    title: Optional[str] = Field(None, description="Listing title")
-
-
-class RepredictResponse(BaseModel):
-    """Response for re-prediction."""
-    predicted_price: float
-    model_used: str
-    difference: Optional[float]
-    difference_pct: Optional[float]
-    deal_score: Optional[str]
-    confidence_note: str
-
-
 @router.post("/repredict", response_model=RepredictResponse)
 async def repredict_with_model(request: RepredictRequest):
     """
     Re-predict price with a different model using previously extracted features.
     
-    This is a fast endpoint that skips LLM classification - just uses the features
-    that were already extracted from a previous prediction.
-    
-    Perfect for comparing predictions across different models without re-analyzing.
+    Fast endpoint that skips LLM classification.
     """
     try:
         model_type_enum = ModelType(request.model_type)
@@ -1257,8 +809,7 @@ async def repredict_with_model(request: RepredictRequest):
             detail=f"Invalid model type: {request.model_type}. Valid: {[m.value for m in ModelType]}"
         )
     
-    # Get listings to train model
-    listings = await _get_filtered_listings()
+    listings = await get_filtered_listings()
     
     if len(listings) < 20:
         raise HTTPException(
@@ -1268,7 +819,6 @@ async def repredict_with_model(request: RepredictRequest):
     
     ml_service = get_ml_service()
     
-    # Train the model (fast if already trained with same data)
     try:
         ml_service.train_and_evaluate(
             listings=listings,
@@ -1278,25 +828,22 @@ async def repredict_with_model(request: RepredictRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model training failed: {str(e)}")
     
-    # Build features dict from request
-    features = {
-        'living_area_m2': request.features.get('living_area_m2', 0),
-        'bedroom_count': request.features.get('bedroom_count', 1),
-        'bathroom_count': request.features.get('bathroom_count', 1),
-        'outdoor_area_m2': request.features.get('outdoor_area_m2', 0),
-        'is_new_construction': 1.0 if request.features.get('is_new_construction') else 0.0,
-        'has_garage': 1.0 if request.features.get('has_garage') else 0.0,
-        'location_district': request.features.get('location') or request.features.get('location_district') or 'Unknown',
-    }
+    features = build_features_from_request(
+        living_area_m2=request.features.get('living_area_m2', 0),
+        bedroom_count=request.features.get('bedroom_count', 1),
+        bathroom_count=request.features.get('bathroom_count', 1),
+        outdoor_area_m2=request.features.get('outdoor_area_m2', 0),
+        is_new_construction=request.features.get('is_new_construction', False),
+        has_garage=request.features.get('has_garage', False),
+        location_district=request.features.get('location') or request.features.get('location_district') or 'Unknown',
+    )
     
     try:
         predicted_price = ml_service.predict(model_type_enum, features)
-    except Exception as e:
-        # Fallback
-        avg_price_per_m2 = sum(l.get('price_eur', 0) / max(l.get('living_area_m2', 1), 1) for l in listings) / len(listings)
-        predicted_price = (features['living_area_m2'] or 70) * avg_price_per_m2
+    except Exception:
+        predicted_price = fallback_price_prediction(listings, features['living_area_m2'] or 70)
     
-    # Calculate difference if actual price provided
+    # Calculate difference
     difference = None
     difference_pct = None
     deal_score = None
@@ -1304,26 +851,12 @@ async def repredict_with_model(request: RepredictRequest):
     if request.actual_price and request.actual_price > 0:
         difference = request.actual_price - predicted_price
         difference_pct = (difference / predicted_price) * 100 if predicted_price > 0 else 0
-        
-        if difference_pct <= -20:
-            deal_score = "great_deal"
-        elif difference_pct <= -10:
-            deal_score = "good_deal"
-        elif difference_pct <= 10:
-            deal_score = "fair"
-        elif difference_pct <= 20:
-            deal_score = "overpriced"
-        else:
-            deal_score = "very_overpriced"
+        deal_score = calculate_deal_score(difference_pct)
     
-    # Confidence note
-    confidence_notes = []
-    if not features['living_area_m2']:
-        confidence_notes.append("Area not detected")
-    if features['location_district'] == 'Unknown':
-        confidence_notes.append("Location unknown")
-    
-    confidence_note = ", ".join(confidence_notes) if confidence_notes else "Good confidence"
+    confidence_note = build_confidence_note(
+        living_area_m2=features['living_area_m2'],
+        location_district=features['location_district'],
+    )
     
     return RepredictResponse(
         predicted_price=round(predicted_price, 0),
@@ -1335,18 +868,96 @@ async def repredict_with_model(request: RepredictRequest):
     )
 
 
+# ==================== DEALS ====================
+
+@router.get("/deals", response_model=DealsResponse)
+async def analyze_deals(
+    model_type: str = Query("ridge", description="Model type to use for predictions"),
+    min_price: Optional[float] = Query(None),
+    max_price: Optional[float] = Query(None),
+    exclude_new_construction: bool = Query(False),
+    location_district: Optional[str] = Query(None),
+    top_n: int = Query(10, ge=1, le=50, description="Number of deals to return"),
+):
+    """
+    Analyze listings to find good deals (underpriced) and bad deals (overpriced).
+    
+    Deal scores:
+    - great_deal: >20% below predicted price
+    - good_deal: 10-20% below predicted
+    - fair: within ±10% of predicted
+    - overpriced: 10-20% above predicted
+    - very_overpriced: >20% above predicted
+    """
+    try:
+        model_type_enum = ModelType(model_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model type: {model_type}. Must be one of: {[mt.value for mt in ModelType]}"
+        )
+    
+    listings = await get_filtered_listings(
+        min_price=min_price,
+        max_price=max_price,
+        exclude_new_construction=exclude_new_construction,
+        location_district=location_district,
+    )
+    
+    if len(listings) < 20:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough listings for deal analysis. Got {len(listings)}, need at least 20."
+        )
+    
+    ml_service = get_ml_service()
+    
+    try:
+        ml_service.train_and_evaluate(
+            listings=listings,
+            model_type=model_type_enum,
+            test_size=0.1,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model training failed: {str(e)}")
+    
+    try:
+        good_deals, bad_deals, avg_error = analyze_listings_for_deals(
+            listings=listings,
+            model_type=model_type_enum,
+            top_n=top_n,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    return DealsResponse(
+        model_used=model_type,
+        total_analyzed=len(listings),
+        good_deals=good_deals,
+        bad_deals=bad_deals,
+        average_error_pct=round(avg_error, 1),
+    )
+
+
+# ==================== MODELS ====================
+
+@router.get("/models")
+async def list_available_models():
+    """List all available model types and their descriptions."""
+    return {"models": get_available_models(ModelType)}
+
+
+# ==================== NEIGHBORHOODS ====================
+
 @router.get("/neighborhoods")
 async def get_neighborhoods():
     """Get list of available neighborhoods with stats."""
-    from collections import defaultdict
-    
     supabase = SupabaseService()
     
     # Direct query to get neighborhood data
-    query = supabase.client.table("listings").select("location_district, price_eur, living_area_m2")
+    query = supabase.client.table("listings_v2").select("location_district, price_eur, living_area_m2")
     result = query.not_.is_("price_eur", "null").execute()
     
-    # Aggregate manually
     stats = defaultdict(lambda: {"count": 0, "total_price": 0, "total_area": 0})
     
     for row in result.data:
@@ -1372,7 +983,231 @@ async def get_neighborhoods():
             "price_per_m2": round(price_per_m2),
         })
     
-    # Sort by count descending
     neighborhoods.sort(key=lambda x: x["count"], reverse=True)
     return {"neighborhoods": neighborhoods}
 
+
+# ==================== SIMILARITY ====================
+
+@router.post("/similarity", response_model=SimilaritySearchResponse)
+async def find_similar_listings(request: SimilaritySearchRequest):
+    """
+    Find the most similar listings based on provided criteria.
+    
+    The similarity algorithm uses weighted scoring across multiple features:
+    - Living area: 25% weight (most important)
+    - Renovation level: 20% weight
+    - Bedrooms: 15% weight
+    - Bathrooms: 10% weight
+    - Outdoor area: 10% weight
+    - Distance from center: 10% weight
+    - District match: 10% weight
+    
+    Binary features (house/apartment, furnished, etc.) are used as filters when specified.
+    """
+    supabase = SupabaseService()
+    
+    # Build query with filters
+    query = supabase.client.table("listings_v2").select("*")
+    
+    # Apply hard filters
+    if request.min_price:
+        query = query.gte("price_eur", request.min_price)
+    if request.max_price:
+        query = query.lte("price_eur", request.max_price)
+    if request.is_new_construction is not None:
+        query = query.eq("is_new_construction", request.is_new_construction)
+    if request.is_furnished is not None:
+        query = query.eq("interior_arranged", request.is_furnished)
+    if request.has_cellar is not None:
+        query = query.eq("has_cellar", request.has_cellar)
+    if request.has_garage:
+        query = query.eq("parking_type", "GARAGE")
+    if request.is_house is not None:
+        building_type = "HOUSE" if request.is_house else "BUILDING"
+        query = query.eq("building_type", building_type)
+    if request.max_distance_from_center:
+        query = query.lte("distance_from_center", request.max_distance_from_center)
+    
+    query = query.not_.is_("price_eur", "null")
+    query = query.not_.is_("living_area_m2", "null")
+    
+    result = query.execute()
+    listings = result.data
+    
+    if not listings:
+        return SimilaritySearchResponse(
+            query=request.model_dump(exclude_none=True),
+            total_candidates=0,
+            results=[]
+        )
+    
+    # Calculate similarity scores
+    scored_listings = calculate_similarity_scores(
+        listings=listings,
+        living_area_m2=request.living_area_m2,
+        outdoor_area_m2=request.outdoor_area_m2,
+        bedroom_count=request.bedroom_count,
+        bathroom_count=request.bathroom_count,
+        renovation_level=request.renovation_level,
+        max_distance_from_center=request.max_distance_from_center,
+        location_district=request.location_district,
+    )
+    
+    # Sort by similarity score descending
+    scored_listings.sort(key=lambda x: x["similarity_score"], reverse=True)
+    
+    # Take top N and format
+    top_results = scored_listings[:request.top_n]
+    results = [format_similar_listing(item) for item in top_results]
+    
+    return SimilaritySearchResponse(
+        query=request.model_dump(exclude_none=True),
+        total_candidates=len(listings),
+        results=results
+    )
+
+
+# ==================== DEDUPLICATION ====================
+
+def _listing_to_duplicate_listing(listing: dict) -> DuplicateListing:
+    """Convert a listing dict to DuplicateListing model."""
+    return DuplicateListing(
+        id=listing.get("id", ""),
+        url=listing.get("url", ""),
+        source=listing.get("source", "njuskalo"),
+        title=listing.get("title"),
+        price_eur=listing.get("price_eur"),
+        living_area_m2=listing.get("living_area_m2"),
+        bedroom_count=listing.get("bedroom_count"),
+        renovation_level=listing.get("renovation_level"),
+        location_district=listing.get("location_district"),
+    )
+
+
+@router.post("/find-duplicates", response_model=FindDuplicatesResponse)
+async def find_duplicates(request: FindDuplicatesRequest):
+    """
+    Find potential duplicate listings across marketplaces.
+    
+    Uses fuzzy matching on price, area, rooms, renovation level, and location
+    to identify properties that may be listed on multiple platforms.
+    
+    The similarity score is calculated as:
+    - Price: 30% weight (±15% tolerance)
+    - Area: 30% weight (±10% tolerance)
+    - Rooms: 20% weight (exact or ±1)
+    - Renovation: 10% weight (±3 levels)
+    - Location: 10% weight (same district)
+    
+    Default threshold is 75 for likely duplicates.
+    """
+    dedup_service = get_deduplication_service()
+    
+    if request.listing_id:
+        # Find duplicates for specific listing
+        candidates = await dedup_service.find_duplicates_for_listing(
+            listing_id=request.listing_id,
+            min_score=request.min_score,
+        )
+    else:
+        # Find all cross-source duplicates
+        candidates = await dedup_service.find_all_cross_source_duplicates(
+            min_score=request.min_score,
+            limit=request.limit,
+        )
+    
+    # Convert to response format
+    duplicates = [
+        DuplicateCandidate(
+            primary_listing=_listing_to_duplicate_listing(c.primary_listing),
+            duplicate_listing=_listing_to_duplicate_listing(c.duplicate_listing),
+            similarity_score=c.similarity_score,
+            score_breakdown=c.score_breakdown,
+        )
+        for c in candidates
+    ]
+    
+    return FindDuplicatesResponse(
+        total_found=len(duplicates),
+        min_score_used=request.min_score,
+        duplicates=duplicates,
+    )
+
+
+@router.post("/duplicates/resolve", response_model=ResolveDuplicateResponse)
+async def resolve_duplicate(request: ResolveDuplicateRequest):
+    """
+    Mark or unmark a listing as a duplicate.
+    
+    If is_duplicate=True, the duplicate_id listing will be marked as a duplicate
+    of the primary_id listing.
+    
+    If is_duplicate=False, any duplicate marking will be removed.
+    """
+    dedup_service = get_deduplication_service()
+    
+    if request.is_duplicate:
+        success = await dedup_service.mark_as_duplicate(
+            duplicate_id=request.duplicate_id,
+            primary_id=request.primary_id,
+        )
+        message = "Listing marked as duplicate" if success else "Failed to mark duplicate"
+    else:
+        success = await dedup_service.unmark_duplicate(request.duplicate_id)
+        message = "Duplicate marking removed" if success else "Failed to remove duplicate marking"
+    
+    return ResolveDuplicateResponse(success=success, message=message)
+
+
+@router.get("/duplicates", response_model=DuplicateGroupsResponse)
+async def get_duplicate_groups():
+    """
+    Get all listings that have been marked as duplicates, grouped by primary listing.
+    
+    Returns groups where each group contains:
+    - The primary listing
+    - All listings marked as duplicates of it
+    """
+    dedup_service = get_deduplication_service()
+    
+    groups = await dedup_service.get_duplicate_groups()
+    
+    # Convert to response format
+    response_groups = []
+    for group in groups:
+        if group.get("primary_listing"):
+            response_groups.append(DuplicateGroup(
+                primary_listing=_listing_to_duplicate_listing(group["primary_listing"]),
+                duplicates=[
+                    _listing_to_duplicate_listing(d) for d in group.get("duplicates", [])
+                ],
+                duplicate_count=len(group.get("duplicates", [])),
+            ))
+    
+    return DuplicateGroupsResponse(
+        total_groups=len(response_groups),
+        groups=response_groups,
+    )
+
+
+@router.get("/sources")
+async def get_listing_sources():
+    """Get count of listings by source marketplace."""
+    supabase = SupabaseService()
+    
+    # Get counts by source
+    result = supabase.client.table("listings_v3").select("source").execute()
+    
+    source_counts = defaultdict(int)
+    for row in result.data:
+        source = row.get("source") or "njuskalo"
+        source_counts[source] += 1
+    
+    return {
+        "sources": [
+            {"source": source, "count": count}
+            for source, count in sorted(source_counts.items())
+        ],
+        "total": sum(source_counts.values()),
+    }

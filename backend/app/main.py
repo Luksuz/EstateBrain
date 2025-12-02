@@ -1,15 +1,31 @@
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .routers import scrape_router, listings_router, locations_router, ml_router
+from .services.scheduler import start_scheduler, stop_scheduler, get_scheduler_status, run_scrape_now
 
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle - start/stop scheduler."""
+    # Startup
+    print("[App] Starting application...")
+    start_scheduler()
+    yield
+    # Shutdown
+    print("[App] Shutting down application...")
+    stop_scheduler()
+
 
 app = FastAPI(
     title="Real Estate Scraper API",
     description="API for scraping and managing real estate listings from njuskalo.hr",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS
@@ -36,4 +52,20 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/api/scheduler/status", tags=["Scheduler"])
+async def scheduler_status():
+    """Get the current scheduler status and upcoming job times."""
+    return get_scheduler_status()
+
+
+@app.post("/api/scheduler/trigger", tags=["Scheduler"])
+async def trigger_scheduled_scrape(background_tasks: BackgroundTasks):
+    """Manually trigger the scheduled Varaždin scrape."""
+    background_tasks.add_task(run_scrape_now)
+    return {
+        "message": "Scheduled scrape triggered",
+        "status": "running in background"
+    }
 

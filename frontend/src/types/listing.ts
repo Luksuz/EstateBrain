@@ -1,50 +1,8 @@
 // Enums matching backend
 
-export enum RoomType {
-  LIVING_ROOM = "LIVING_ROOM",
-  BEDROOM = "BEDROOM",
-  KITCHEN = "KITCHEN",
-  BATHROOM = "BATHROOM",
-  TOILET = "TOILET",
-  HALLWAY = "HALLWAY",
-  BALCONY = "BALCONY",
-  TERRACE = "TERRACE",
-  STORAGE = "STORAGE",
-  GARAGE = "GARAGE",
-  LAUNDRY = "LAUNDRY",
-  DINING_ROOM = "DINING_ROOM",
-  OFFICE = "OFFICE",
-  WALK_IN_CLOSET = "WALK_IN_CLOSET",
-  EXTERIOR = "EXTERIOR",
-  FLOOR_PLAN = "FLOOR_PLAN",
-  OTHER = "OTHER",
-}
-
-export enum RoomCondition {
-  NEW = "NEW",
-  EXCELLENT = "EXCELLENT",
-  GOOD = "GOOD",
-  FAIR = "FAIR",
-  NEEDS_WORK = "NEEDS_WORK",
-  ROH_BAU = "ROH_BAU",
-  UNKNOWN = "UNKNOWN",
-}
-
-export enum RoomFeature {
-  FLOOR_HEATING = "FLOOR_HEATING",
-  AIR_CONDITIONING = "AIR_CONDITIONING",
-  FIREPLACE = "FIREPLACE",
-  BUILT_IN_CLOSET = "BUILT_IN_CLOSET",
-  BATHTUB = "BATHTUB",
-  SHOWER = "SHOWER",
-  DOUBLE_SINK = "DOUBLE_SINK",
-  KITCHEN_ISLAND = "KITCHEN_ISLAND",
-  MODERN_APPLIANCES = "MODERN_APPLIANCES",
-  LARGE_WINDOWS = "LARGE_WINDOWS",
-  HIGH_CEILING = "HIGH_CEILING",
-  PARQUET_FLOOR = "PARQUET_FLOOR",
-  TILE_FLOOR = "TILE_FLOOR",
-  LAMINATE_FLOOR = "LAMINATE_FLOOR",
+export enum BuildingType {
+  HOUSE = "HOUSE",
+  BUILDING = "BUILDING",
 }
 
 export enum ConstructionPhase {
@@ -80,6 +38,18 @@ export enum JobStatus {
   FAILED = "failed",
 }
 
+export enum ScrapeSource {
+  NJUSKALO = "njuskalo",
+  CROZILLA = "crozilla",
+}
+
+export interface SourceInfo {
+  id: string;
+  name: string;
+  domain: string;
+  default_search_url: string;
+}
+
 export interface ImageData {
   id?: string;
   thumbnail?: string;
@@ -87,17 +57,6 @@ export interface ImageData {
   src?: string;
   width?: string;
   height?: string;
-}
-
-export interface Room {
-  room_type: RoomType;
-  image_url?: string;
-  condition: RoomCondition;
-  condition_reasoning?: string;
-  features: string[];
-  notes?: string;
-  estimated_area_m2?: number;
-  from_description?: boolean;
 }
 
 export interface Listing {
@@ -111,6 +70,10 @@ export interface Listing {
   location_city?: string;
   location_district?: string;
   floor_level?: string;
+  latitude?: number;
+  longitude?: number;
+  location_approximate?: boolean;
+  distance_from_center?: number;  // km from city center
   // Dimensions
   metadata_area_m2?: number;
   living_area_m2?: number;
@@ -122,14 +85,17 @@ export interface Listing {
   bedroom_count?: number;
   bathroom_count?: number;
   parking_type: ParkingType;
+  building_type?: BuildingType;
+  interior_arranged?: boolean;  // True if furnished/arranged
+  has_cellar?: boolean;  // True if includes cellar/storage
   // Condition
   construction_phase: ConstructionPhase;
+  renovation_level?: number;  // 1-10 scale
   heating_system: HeatingSystem;
   energy_class?: string;
   // Content
   description?: string;
   images: ImageData[];
-  rooms: Room[];
   additional_info: Record<string, string[]>;
   // Seller
   seller_name?: string;
@@ -166,12 +132,22 @@ export interface ListingFilter {
   construction_phase?: ConstructionPhase;
   heating_system?: HeatingSystem;
   parking_type?: ParkingType;
+  building_type?: BuildingType;
+  interior_arranged?: boolean;  // Filter by furnished/unfurnished
   is_new_construction?: boolean;
   min_bedrooms?: number;
+  min_renovation_level?: number;
+  max_renovation_level?: number;
+  max_distance_from_center?: number;
   require_ml_features?: boolean;  // Only return listings with complete ML features
 }
 
 // Display labels
+export const BuildingTypeLabels: Record<BuildingType, string> = {
+  [BuildingType.HOUSE]: "House",
+  [BuildingType.BUILDING]: "Apartment Building",
+};
+
 export const ConstructionPhaseLabels: Record<ConstructionPhase, string> = {
   [ConstructionPhase.ROH_BAU]: "Roh-bau (Unfinished)",
   [ConstructionPhase.HIGH_ROH_BAU]: "High Roh-bau",
@@ -198,6 +174,16 @@ export const ParkingTypeLabels: Record<ParkingType, string> = {
   [ParkingType.UNKNOWN]: "Unknown",
 };
 
+// Interior arranged labels
+export function getInteriorArrangedLabel(arranged?: boolean): { label: string; icon: string } {
+  if (arranged === true) {
+    return { label: "Furnished", icon: "🛋️" };
+  } else if (arranged === false) {
+    return { label: "Unfurnished", icon: "📦" };
+  }
+  return { label: "Unknown", icon: "❓" };
+}
+
 export const JobStatusLabels: Record<JobStatus, string> = {
   [JobStatus.PENDING]: "Pending",
   [JobStatus.RUNNING]: "Running",
@@ -205,49 +191,48 @@ export const JobStatusLabels: Record<JobStatus, string> = {
   [JobStatus.FAILED]: "Failed",
 };
 
-export const RoomTypeLabels: Record<RoomType, string> = {
-  [RoomType.LIVING_ROOM]: "Living Room",
-  [RoomType.BEDROOM]: "Bedroom",
-  [RoomType.KITCHEN]: "Kitchen",
-  [RoomType.BATHROOM]: "Bathroom",
-  [RoomType.TOILET]: "Toilet",
-  [RoomType.HALLWAY]: "Hallway",
-  [RoomType.BALCONY]: "Balcony",
-  [RoomType.TERRACE]: "Terrace",
-  [RoomType.STORAGE]: "Storage",
-  [RoomType.GARAGE]: "Garage",
-  [RoomType.LAUNDRY]: "Laundry",
-  [RoomType.DINING_ROOM]: "Dining Room",
-  [RoomType.OFFICE]: "Office",
-  [RoomType.WALK_IN_CLOSET]: "Walk-in Closet",
-  [RoomType.EXTERIOR]: "Exterior",
-  [RoomType.FLOOR_PLAN]: "Floor Plan",
-  [RoomType.OTHER]: "Other",
-};
+// Helper function to get renovation level label and color
+export function getRenovationLevelInfo(level?: number): { label: string; color: string; description: string } {
+  if (!level) return { label: "Unknown", color: "bg-slate-500", description: "Not assessed" };
+  
+  if (level <= 2) {
+    return { 
+      label: `${level}/10`, 
+      color: "bg-rose-500", 
+      description: "Needs full renovation" 
+    };
+  } else if (level <= 4) {
+    return { 
+      label: `${level}/10`, 
+      color: "bg-orange-500", 
+      description: "Significant work needed" 
+    };
+  } else if (level <= 6) {
+    return { 
+      label: `${level}/10`, 
+      color: "bg-amber-500", 
+      description: "Some updates needed" 
+    };
+  } else if (level <= 8) {
+    return { 
+      label: `${level}/10`, 
+      color: "bg-lime-500", 
+      description: "Good condition" 
+    };
+  } else {
+    return { 
+      label: `${level}/10`, 
+      color: "bg-emerald-500", 
+      description: "Modern/Move-in ready" 
+    };
+  }
+}
 
-export const RoomConditionLabels: Record<RoomCondition, string> = {
-  [RoomCondition.NEW]: "New",
-  [RoomCondition.EXCELLENT]: "Excellent",
-  [RoomCondition.GOOD]: "Good",
-  [RoomCondition.FAIR]: "Fair",
-  [RoomCondition.NEEDS_WORK]: "Needs Work",
-  [RoomCondition.ROH_BAU]: "Unfinished",
-  [RoomCondition.UNKNOWN]: "Unknown",
-};
-
-export const RoomFeatureLabels: Record<RoomFeature, string> = {
-  [RoomFeature.FLOOR_HEATING]: "Floor Heating",
-  [RoomFeature.AIR_CONDITIONING]: "Air Conditioning",
-  [RoomFeature.FIREPLACE]: "Fireplace",
-  [RoomFeature.BUILT_IN_CLOSET]: "Built-in Closet",
-  [RoomFeature.BATHTUB]: "Bathtub",
-  [RoomFeature.SHOWER]: "Shower",
-  [RoomFeature.DOUBLE_SINK]: "Double Sink",
-  [RoomFeature.KITCHEN_ISLAND]: "Kitchen Island",
-  [RoomFeature.MODERN_APPLIANCES]: "Modern Appliances",
-  [RoomFeature.LARGE_WINDOWS]: "Large Windows",
-  [RoomFeature.HIGH_CEILING]: "High Ceiling",
-  [RoomFeature.PARQUET_FLOOR]: "Parquet Floor",
-  [RoomFeature.TILE_FLOOR]: "Tile Floor",
-  [RoomFeature.LAMINATE_FLOOR]: "Laminate Floor",
-};
+// Helper function to format distance
+export function formatDistance(km?: number): string {
+  if (!km) return "N/A";
+  if (km < 1) {
+    return `${Math.round(km * 1000)} m`;
+  }
+  return `${km.toFixed(1)} km`;
+}

@@ -9,12 +9,10 @@ import {
   ConstructionPhaseLabels,
   HeatingSystemLabels,
   ParkingTypeLabels,
-  RoomTypeLabels,
-  RoomConditionLabels,
-  RoomFeatureLabels,
-  RoomType,
-  RoomCondition,
-  RoomFeature,
+  BuildingType,
+  BuildingTypeLabels,
+  getRenovationLevelInfo,
+  formatDistance,
 } from "@/types/listing";
 
 export default function ListingDetailPage({
@@ -27,12 +25,6 @@ export default function ListingDetailPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeImage, setActiveImage] = useState(0);
-  const [reasoningModal, setReasoningModal] = useState<{ 
-    roomIndex: number; 
-    reasoning: string;
-    roomType: string;
-    condition: string;
-  } | null>(null);
 
   useEffect(() => {
     const fetchListing = async () => {
@@ -102,6 +94,7 @@ export default function ListingDetailPage({
   const images = listing.images || [];
   const currentImage = images[activeImage]?.large || images[activeImage]?.thumbnail || images[activeImage]?.src;
   const displayArea = listing.living_area_m2 || listing.metadata_area_m2;
+  const renovationInfo = getRenovationLevelInfo(listing.renovation_level);
 
   return (
     <div className="relative p-4 lg:p-8">
@@ -138,6 +131,15 @@ export default function ListingDetailPage({
               {listing.is_new_construction && (
                 <span className="px-3 py-1.5 text-sm font-semibold bg-gradient-to-r from-emerald-500 to-cyan-500 text-white rounded-full shadow-lg shadow-emerald-500/25">
                   NEW BUILD
+                </span>
+              )}
+              {listing.building_type && (
+                <span className={`px-3 py-1.5 text-sm font-medium rounded-full ${
+                  listing.building_type === BuildingType.HOUSE 
+                    ? "bg-amber-500/90 text-white" 
+                    : "bg-violet-500/90 text-white"
+                }`}>
+                  {listing.building_type === BuildingType.HOUSE ? "🏠" : "🏢"} {BuildingTypeLabels[listing.building_type]}
                 </span>
               )}
               {listing.area_conflict && (
@@ -196,9 +198,115 @@ export default function ListingDetailPage({
             </div>
           )}
 
+          {/* Renovation Level Card */}
+          {listing.renovation_level && (
+            <div className="glass rounded-2xl p-6 animate-fade-in stagger-3" style={{ opacity: 0 }}>
+              <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                Renovation Assessment
+              </h2>
+              
+              {/* Visual Bar */}
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-slate-400">Condition Level</span>
+                  <span className={`px-3 py-1 rounded-full text-sm font-bold text-white ${renovationInfo.color}`}>
+                    {renovationInfo.label}
+                  </span>
+                </div>
+                <div className="h-3 bg-slate-800 rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full ${renovationInfo.color} transition-all duration-500`}
+                    style={{ width: `${(listing.renovation_level / 10) * 100}%` }}
+                  />
+                </div>
+                <p className="text-sm text-slate-400 mt-2">{renovationInfo.description}</p>
+              </div>
+
+              {/* Scale Legend */}
+              <div className="grid grid-cols-5 gap-1 text-xs text-center">
+                <div className="p-2 bg-rose-500/20 rounded-lg">
+                  <div className="font-bold text-rose-400">1-2</div>
+                  <div className="text-slate-500">Full reno</div>
+                </div>
+                <div className="p-2 bg-orange-500/20 rounded-lg">
+                  <div className="font-bold text-orange-400">3-4</div>
+                  <div className="text-slate-500">Major work</div>
+                </div>
+                <div className="p-2 bg-amber-500/20 rounded-lg">
+                  <div className="font-bold text-amber-400">5-6</div>
+                  <div className="text-slate-500">Updates</div>
+                </div>
+                <div className="p-2 bg-lime-500/20 rounded-lg">
+                  <div className="font-bold text-lime-400">7-8</div>
+                  <div className="text-slate-500">Good</div>
+                </div>
+                <div className="p-2 bg-emerald-500/20 rounded-lg">
+                  <div className="font-bold text-emerald-400">9-10</div>
+                  <div className="text-slate-500">Modern</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Map */}
+          {listing.latitude && listing.longitude && (
+            <div className="glass rounded-2xl p-6 animate-fade-in stagger-4" style={{ opacity: 0 }}>
+              <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Location
+                {listing.location_approximate && (
+                  <span className="text-xs font-normal text-amber-400 ml-2">(approximate)</span>
+                )}
+              </h2>
+              
+              {/* OpenStreetMap Embed */}
+              <div className="relative aspect-[16/9] rounded-xl overflow-hidden bg-slate-800">
+                <iframe
+                  src={`https://www.openstreetmap.org/export/embed.html?bbox=${listing.longitude - 0.01},${listing.latitude - 0.008},${listing.longitude + 0.01},${listing.latitude + 0.008}&layer=mapnik&marker=${listing.latitude},${listing.longitude}`}
+                  className="w-full h-full border-0"
+                  loading="lazy"
+                  title="Property Location"
+                />
+                
+                {/* Overlay for click to open larger map */}
+                <a
+                  href={`https://www.openstreetmap.org/?mlat=${listing.latitude}&mlon=${listing.longitude}#map=16/${listing.latitude}/${listing.longitude}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="absolute bottom-3 right-3 px-3 py-1.5 bg-slate-900/90 backdrop-blur-sm text-white text-sm rounded-lg hover:bg-slate-800 transition-colors flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                  Open in Maps
+                </a>
+              </div>
+              
+              {/* Distance info */}
+              {listing.distance_from_center !== undefined && listing.distance_from_center !== null && (
+                <div className="mt-4 flex items-center justify-between text-sm">
+                  <span className="text-slate-400">Distance from {listing.location_district || 'city'} center</span>
+                  <span className="text-emerald-400 font-medium">{formatDistance(listing.distance_from_center)}</span>
+                </div>
+              )}
+              
+              {/* Coordinates */}
+              <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+                <span>Coordinates</span>
+                <span className="font-mono">{listing.latitude.toFixed(5)}, {listing.longitude.toFixed(5)}</span>
+              </div>
+            </div>
+          )}
+
           {/* Description */}
           {listing.description && (
-            <div className="glass rounded-2xl p-6 animate-fade-in stagger-4" style={{ opacity: 0 }}>
+            <div className="glass rounded-2xl p-6 animate-fade-in stagger-5" style={{ opacity: 0 }}>
               <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
                 <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h7" />
@@ -207,163 +315,6 @@ export default function ListingDetailPage({
               </h2>
               <div className="text-slate-300 whitespace-pre-line leading-relaxed text-sm">
                 {listing.description}
-              </div>
-            </div>
-          )}
-
-          {/* Rooms Section */}
-          {listing.rooms && listing.rooms.length > 0 && (
-            <div className="glass rounded-2xl p-6 animate-fade-in stagger-5" style={{ opacity: 0 }}>
-              <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                </svg>
-                Room Analysis ({listing.rooms.length})
-              </h2>
-              
-              {/* Room Type Summary */}
-              <div className="mb-6 flex flex-wrap gap-2">
-                {Object.entries(
-                  listing.rooms.reduce((acc, room) => {
-                    acc[room.room_type] = (acc[room.room_type] || 0) + 1;
-                    return acc;
-                  }, {} as Record<string, number>)
-                ).map(([type, count]) => (
-                  <span
-                    key={type}
-                    className="px-3 py-1.5 bg-slate-800/50 border border-slate-700/50 rounded-full text-sm text-slate-300"
-                  >
-                    {RoomTypeLabels[type as RoomType] || type}: {count}
-                  </span>
-                ))}
-              </div>
-              
-              {/* Room Cards Grid */}
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-                {listing.rooms.map((room, index) => (
-                  <div
-                    key={index}
-                    className="group relative glass-lighter rounded-xl overflow-hidden card-hover"
-                  >
-                    {/* Room Image */}
-                    {room.image_url ? (
-                      <div className="aspect-[4/3] relative overflow-hidden">
-                        <img
-                          src={room.image_url}
-                          alt={RoomTypeLabels[room.room_type as RoomType] || room.room_type}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 via-transparent to-transparent" />
-                        {/* Room Type Badge */}
-                        <div className="absolute bottom-2 left-2 px-2 py-1 bg-slate-900/70 backdrop-blur-sm rounded-lg text-xs font-medium text-white">
-                          {RoomTypeLabels[room.room_type as RoomType] || room.room_type}
-                        </div>
-                        {/* Condition Badge with Info Button */}
-                        <div className="absolute top-2 right-2 flex items-center gap-1">
-                          <div className={`px-2 py-1 rounded-lg text-xs font-medium ${
-                            room.condition === 'NEW' || room.condition === 'EXCELLENT' 
-                              ? 'bg-emerald-500/80 text-white'
-                              : room.condition === 'GOOD' || room.condition === 'FAIR'
-                              ? 'bg-amber-500/80 text-white'
-                              : room.condition === 'NEEDS_WORK' || room.condition === 'ROH_BAU'
-                              ? 'bg-rose-500/80 text-white'
-                              : 'bg-slate-600/80 text-slate-200'
-                          }`}>
-                            {RoomConditionLabels[room.condition] || room.condition}
-                          </div>
-                          {room.condition_reasoning && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setReasoningModal({ 
-                                  roomIndex: index, 
-                                  reasoning: room.condition_reasoning!, 
-                                  roomType: room.room_type,
-                                  condition: room.condition
-                                });
-                              }}
-                              className="w-6 h-6 rounded-full bg-slate-900/70 backdrop-blur-sm text-white hover:bg-emerald-500 transition-colors flex items-center justify-center"
-                              title="View AI reasoning"
-                            >
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="aspect-[4/3] bg-slate-800/30 flex items-center justify-center relative">
-                        {room.from_description && (
-                          <div className="absolute top-2 left-2 px-2 py-1 bg-cyan-500/80 backdrop-blur-sm rounded-lg text-xs font-medium text-white flex items-center gap-1">
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
-                            Text
-                          </div>
-                        )}
-                        <div className="absolute top-2 right-2 flex items-center gap-1">
-                          <div className={`px-2 py-1 rounded-lg text-xs font-medium ${
-                            room.condition === 'NEW' || room.condition === 'EXCELLENT' 
-                              ? 'bg-emerald-500/80 text-white'
-                              : room.condition === 'GOOD' || room.condition === 'FAIR'
-                              ? 'bg-amber-500/80 text-white'
-                              : room.condition === 'NEEDS_WORK' || room.condition === 'ROH_BAU'
-                              ? 'bg-rose-500/80 text-white'
-                              : 'bg-slate-600/80 text-slate-200'
-                          }`}>
-                            {RoomConditionLabels[room.condition] || room.condition}
-                          </div>
-                        </div>
-                        <div className="text-center p-4">
-                          <div className="text-3xl mb-1">
-                            {room.room_type === 'BEDROOM' ? '🛏️' :
-                             room.room_type === 'KITCHEN' ? '🍳' :
-                             room.room_type === 'BATHROOM' ? '🚿' :
-                             room.room_type === 'TOILET' ? '🚽' :
-                             room.room_type === 'LIVING_ROOM' ? '🛋️' :
-                             room.room_type === 'BALCONY' ? '🌿' :
-                             room.room_type === 'TERRACE' ? '☀️' :
-                             room.room_type === 'GARAGE' ? '🚗' :
-                             room.room_type === 'EXTERIOR' ? '🏠' :
-                             room.room_type === 'FLOOR_PLAN' ? '📐' :
-                             room.room_type === 'STORAGE' ? '📦' :
-                             room.room_type === 'HALLWAY' ? '🚶' :
-                             room.room_type === 'OFFICE' ? '💼' :
-                             room.room_type === 'DINING_ROOM' ? '🍽️' :
-                             '🚪'}
-                          </div>
-                          <div className="text-xs font-medium text-slate-400">
-                            {RoomTypeLabels[room.room_type as RoomType] || room.room_type}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Room Details */}
-                    {(room.notes || room.features?.length) && (
-                      <div className="p-3 space-y-2">
-                        {room.notes && (
-                          <p className="text-xs text-slate-400 line-clamp-2">{room.notes}</p>
-                        )}
-                        {room.features && room.features.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {room.features.slice(0, 3).map((feature, i) => (
-                              <span key={i} className="px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded text-[10px] text-emerald-400">
-                                {RoomFeatureLabels[feature as RoomFeature] || feature}
-                              </span>
-                            ))}
-                            {room.features.length > 3 && (
-                              <span className="px-2 py-0.5 bg-slate-700/50 rounded text-[10px] text-slate-400">
-                                +{room.features.length - 3}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
               </div>
             </div>
           )}
@@ -385,7 +336,7 @@ export default function ListingDetailPage({
             
             {/* Location */}
             {listing.location_city && (
-              <div className="flex items-center gap-2 text-slate-400 mb-6">
+              <div className="flex items-center gap-2 text-slate-400 mb-2">
                 <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -394,6 +345,16 @@ export default function ListingDetailPage({
                   {listing.location_city}
                   {listing.location_district && `, ${listing.location_district}`}
                 </span>
+              </div>
+            )}
+
+            {/* Distance from center */}
+            {listing.distance_from_center !== undefined && listing.distance_from_center !== null && (
+              <div className="flex items-center gap-2 text-slate-400 mb-6">
+                <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+                </svg>
+                <span>{formatDistance(listing.distance_from_center)} from city center</span>
               </div>
             )}
 
@@ -450,6 +411,12 @@ export default function ListingDetailPage({
                   <div className="text-lg font-semibold text-white">{listing.year_built}</div>
                 </div>
               )}
+              {listing.outdoor_area_m2 && (
+                <div className="stat-card">
+                  <div className="text-xs text-slate-500 mb-1">Outdoor Area</div>
+                  <div className="text-lg font-semibold text-white">{listing.outdoor_area_m2} m²</div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -463,6 +430,15 @@ export default function ListingDetailPage({
               Specifications
             </h2>
             <div className="space-y-3 text-sm">
+              {listing.building_type && (
+                <div className="flex items-center justify-between py-2 border-b border-slate-800/50">
+                  <span className="text-slate-400">Building Type</span>
+                  <span className="text-white font-medium flex items-center gap-1">
+                    {listing.building_type === BuildingType.HOUSE ? "🏠" : "🏢"}
+                    {BuildingTypeLabels[listing.building_type]}
+                  </span>
+                </div>
+              )}
               {listing.construction_phase !== ConstructionPhase.UNKNOWN && (
                 <div className="flex items-center justify-between py-2 border-b border-slate-800/50">
                   <span className="text-slate-400">Construction</span>
@@ -478,7 +454,7 @@ export default function ListingDetailPage({
                 <span className="text-white font-medium">{ParkingTypeLabels[listing.parking_type]}</span>
               </div>
               {listing.energy_class && (
-                <div className="flex items-center justify-between py-2">
+                <div className="flex items-center justify-between py-2 border-b border-slate-800/50">
                   <span className="text-slate-400">Energy Class</span>
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${
                     listing.energy_class.startsWith('A') ? 'bg-emerald-500/20 text-emerald-400' :
@@ -487,6 +463,26 @@ export default function ListingDetailPage({
                     'bg-rose-500/20 text-rose-400'
                   }`}>
                     {listing.energy_class}
+                  </span>
+                </div>
+              )}
+              {listing.interior_arranged !== undefined && listing.interior_arranged !== null && (
+                <div className="flex items-center justify-between py-2 border-b border-slate-800/50">
+                  <span className="text-slate-400">Interior</span>
+                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                    listing.interior_arranged ? 'bg-teal-500/20 text-teal-400' : 'bg-slate-500/20 text-slate-400'
+                  }`}>
+                    {listing.interior_arranged ? '🛋️ Furnished' : '📦 Unfurnished'}
+                  </span>
+                </div>
+              )}
+              {listing.has_cellar !== undefined && listing.has_cellar !== null && (
+                <div className="flex items-center justify-between py-2">
+                  <span className="text-slate-400">Storage</span>
+                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                    listing.has_cellar ? 'bg-violet-500/20 text-violet-400' : 'bg-slate-500/20 text-slate-400'
+                  }`}>
+                    {listing.has_cellar ? '📦 Has Cellar' : 'No Cellar'}
                   </span>
                 </div>
               )}
@@ -521,74 +517,6 @@ export default function ListingDetailPage({
           </div>
         </div>
       </div>
-
-      {/* AI Reasoning Modal */}
-      {reasoningModal && (
-        <div 
-          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
-          onClick={() => setReasoningModal(null)}
-        >
-          <div 
-            className="relative w-full max-w-lg glass rounded-2xl shadow-2xl overflow-hidden animate-fade-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal Header */}
-            <div className="flex items-center justify-between p-5 border-b border-slate-800/50">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-500/20 flex items-center justify-center">
-                  <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-white">AI Analysis</h3>
-                  <p className="text-xs text-slate-400">
-                    {RoomTypeLabels[reasoningModal.roomType as RoomType] || reasoningModal.roomType}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setReasoningModal(null)}
-                className="w-8 h-8 rounded-lg bg-slate-800/50 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors flex items-center justify-center"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            
-            {/* Modal Body */}
-            <div className="p-5">
-              {/* Condition Badge */}
-              <div className="mb-4 flex items-center gap-2">
-                <span className="text-sm text-slate-400">Condition:</span>
-                <span className={`badge ${
-                  reasoningModal.condition === 'NEW' || reasoningModal.condition === 'EXCELLENT' 
-                    ? 'badge-success'
-                    : reasoningModal.condition === 'GOOD' || reasoningModal.condition === 'FAIR'
-                    ? 'badge-warning'
-                    : reasoningModal.condition === 'NEEDS_WORK' || reasoningModal.condition === 'ROH_BAU'
-                    ? 'badge-error'
-                    : 'badge-info'
-                }`}>
-                  {RoomConditionLabels[reasoningModal.condition as RoomCondition] || reasoningModal.condition}
-                </span>
-              </div>
-              
-              {/* Reasoning Text */}
-              <div className="p-4 bg-slate-800/30 rounded-xl border border-slate-700/30">
-                <p className="text-slate-300 leading-relaxed text-sm">{reasoningModal.reasoning}</p>
-              </div>
-              <p className="mt-4 text-xs text-slate-500 text-center flex items-center justify-center gap-1">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-                Generated by AI based on visual analysis
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

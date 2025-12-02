@@ -1,6 +1,6 @@
 """
 LLM-based listing classifier using LangChain and OpenRouter.
-Classifies raw listing data into standardized categories with image analysis.
+Classifies raw listing data into standardized categories with renovation assessment.
 """
 
 import os
@@ -60,14 +60,6 @@ class Dimensions(BaseModel):
     area_conflict_detected: Optional[bool] = Field(None, description="True if metadata differs >10% from description")
 
 
-class ParkingType(str):
-    GARAGE = "GARAGE"
-    OUTDOOR_OWNED = "OUTDOOR_OWNED"
-    PUBLIC_PAID = "PUBLIC_PAID"
-    NONE = "NONE"
-    UNKNOWN = "UNKNOWN"
-
-
 class BuildingSpecs(BaseModel):
     """Building specifications."""
     year_built: Optional[int] = Field(None, description="Year of construction")
@@ -75,23 +67,18 @@ class BuildingSpecs(BaseModel):
     bedroom_count: Optional[int] = Field(None, description="Number of bedrooms (not total rooms)")
     bathroom_count: Optional[int] = Field(None, description="Number of bathrooms")
     parking_type: Optional[str] = Field(None, description="GARAGE, OUTDOOR_OWNED, PUBLIC_PAID, NONE, UNKNOWN")
-
-
-class ConstructionPhase(str):
-    ROH_BAU = "ROH_BAU"
-    HIGH_ROH_BAU = "HIGH_ROH_BAU"
-    FINISHED_NEW = "FINISHED_NEW"
-    OLD_MAINTAINED = "OLD_MAINTAINED"
-    NEEDS_RENOVATION = "NEEDS_RENOVATION"
-
-
-class HeatingSystem(str):
-    GAS_FLOOR = "GAS_FLOOR"
-    HEAT_PUMP = "HEAT_PUMP"
-    ELECTRIC = "ELECTRIC"
-    DISTRICT_HEATING = "DISTRICT_HEATING"
-    WOOD_PELLET = "WOOD_PELLET"
-    UNKNOWN = "UNKNOWN"
+    building_type: Optional[str] = Field(
+        None, 
+        description="HOUSE (kuća, family house, ground floor of house) or BUILDING (zgrada, apartment building, multi-story residential)"
+    )
+    interior_arranged: Optional[bool] = Field(
+        None,
+        description="True if interior is arranged/furnished, False if unfurnished/empty"
+    )
+    has_cellar: Optional[bool] = Field(
+        None,
+        description="True if apartment includes cellar/storage room (podrum, spremište)"
+    )
 
 
 class Condition(BaseModel):
@@ -100,38 +87,19 @@ class Condition(BaseModel):
         None, 
         description="ROH_BAU (unfinished shell), HIGH_ROH_BAU, FINISHED_NEW, OLD_MAINTAINED, NEEDS_RENOVATION"
     )
+    renovation_level: Optional[int] = Field(
+        None,
+        description="1-10 rating: 1=uninhabitable hole, 5=dated but livable, 10=modern luxury. Objective measure of effort needed to reach comfortable modern living."
+    )
+    renovation_reasoning: Optional[str] = Field(
+        None,
+        description="Brief explanation of why this renovation level was assigned based on visible condition."
+    )
     heating_system: Optional[str] = Field(
         None,
         description="GAS_FLOOR (podno grijanje na plin), HEAT_PUMP, ELECTRIC, DISTRICT_HEATING, WOOD_PELLET, UNKNOWN"
     )
     energy_class: Optional[str] = Field(None, description="Energy rating: A+, A, B, C, D, E, F, G")
-
-
-class RoomAnalysis(BaseModel):
-    """Individual room detected from images or description."""
-    room_type: str = Field(
-        ..., 
-        description="LIVING_ROOM, BEDROOM, KITCHEN, BATHROOM, TOILET, HALLWAY, BALCONY, TERRACE, STORAGE, GARAGE, LAUNDRY, DINING_ROOM, OFFICE, WALK_IN_CLOSET, EXTERIOR, FLOOR_PLAN, OTHER"
-    )
-    image_url: Optional[str] = Field(
-        None, 
-        description="The EXACT URL of the image showing this room. Null if room is only mentioned in description."
-    )
-    condition: str = Field(
-        default="UNKNOWN",
-        description="NEW, EXCELLENT, GOOD, FAIR, NEEDS_WORK, ROH_BAU, UNKNOWN (use UNKNOWN if no image)"
-    )
-    condition_reasoning: Optional[str] = Field(
-        None,
-        description="Explain WHY you assigned this condition. For rooms without images: 'Mentioned in description but no image available'"
-    )
-    features: List[str] = Field(
-        default_factory=list,
-        description="Features visible or mentioned: FLOOR_HEATING, AIR_CONDITIONING, FIREPLACE, BUILT_IN_CLOSET, BATHTUB, SHOWER, DOUBLE_SINK, KITCHEN_ISLAND, MODERN_APPLIANCES, LARGE_WINDOWS, HIGH_CEILING, PARQUET_FLOOR, TILE_FLOOR, LAMINATE_FLOOR"
-    )
-    notes: Optional[str] = Field(None, description="Brief observation. For description-only rooms, quote the relevant text.")
-    estimated_area_m2: Optional[float] = Field(None, description="Room size if mentioned in description or visible")
-    from_description: Optional[bool] = Field(None, description="True if this room was extracted from description text (no image)")
 
 
 class ClassifiedListing(BaseModel):
@@ -141,10 +109,9 @@ class ClassifiedListing(BaseModel):
     dimensions: Dimensions = Field(default_factory=Dimensions)
     building_specs: BuildingSpecs = Field(default_factory=BuildingSpecs)
     condition: Condition = Field(default_factory=Condition)
-    rooms: List[RoomAnalysis] = Field(default_factory=list, description="Rooms detected from images")
 
 
-CLASSIFICATION_PROMPT = """You are a Croatian real estate listing analyzer. Extract structured data from the listing below AND identify ALL rooms from BOTH images AND description text.
+CLASSIFICATION_PROMPT = """You are a Croatian real estate listing analyzer. Extract structured data from the listing and assess the overall renovation level.
 
 ## CRITICAL RULES:
 1. **AREA CONFLICT**: The metadata area (in header) is often WRONG. The description text has the TRUE living area. Flag conflicts >10%.
@@ -166,6 +133,120 @@ The "Lokacija" field contains the REAL location. It follows this structure:
 4. If the location says "Varaždin - Okolica > Kućan Marof", then city="Varaždin", district="Kućan Marof"
 5. If the location says "Varaždin > Centar" or just mentions Varaždin center, then city="Varaždin", district="Varaždin"
 
+## BUILDING TYPE DETECTION:
+
+Determine if the property is in a HOUSE or BUILDING:
+
+**HOUSE indicators:**
+- "kuća", "obiteljska kuća" (family house)
+- "prizemlje kuće" (ground floor of house)
+- "dio kuće" (part of house)
+- Ground floor with garden/yard ("dvorište")
+- Single-family or two-family property
+- "katnica" (multi-story house)
+
+**BUILDING indicators:**
+- "zgrada", "stambena zgrada" (residential building)
+- Floor mentioned (1. kat, 2. kat, etc.) without house reference
+- "lift" (elevator) mentioned
+- Multiple apartments mentioned
+- "novogradnja" in urban context usually = BUILDING
+- High-rise or multi-unit residential
+
+## INTERIOR ARRANGED DETECTION:
+
+Determine if the property comes with REAL furniture (not renders/visualizations):
+
+**ARRANGED (interior_arranged: true):**
+- "namješten" (furnished) or "opremljen stan" (equipped apartment) in description
+- "potpuno opremljen" (fully equipped) or "kompletno namješten"
+- REAL photos (not 3D renders) showing: beds, sofas, dining tables, wardrobes, living room furniture
+- Clearly lived-in appearance with real furniture
+- "s namještajem" (with furniture)
+
+**NOT ARRANGED (interior_arranged: false):**
+- "nenamješten" (unfurnished) in description
+- "prazan stan" (empty apartment) or "bez namještaja" (without furniture)
+- REAL photos showing empty rooms - no beds, no sofas, no wardrobes
+- Only built-in kitchen cabinets/appliances (this is STANDARD, not "furnished")
+- New construction showing only built-in elements
+- "stan za uređenje" (apartment for arranging)
+
+**CRITICAL DISTINCTIONS:**
+- Built-in kitchen with appliances = NOT furnished (this is standard)
+- 3D renders/visualizations showing furniture = IGNORE these, they're just marketing
+- Floor plans = NOT relevant to furnished status
+- Only count REAL furniture in REAL photos
+
+**Default to false** for new construction unless explicitly stated as furnished
+
+## CELLAR/STORAGE DETECTION:
+
+Determine if the property includes a cellar or storage room:
+
+**HAS CELLAR (has_cellar: true):**
+- "podrum" (cellar/basement storage)
+- "spremište" (storage room)
+- "drvarnica" (wood storage - counts as cellar)
+- "ostava" (pantry/storage)
+- "podrumska prostorija" (basement room)
+- Listed in additional features/amenities
+- Visible in images: basement corridor, storage units, cellar door
+
+**NO CELLAR (has_cellar: false):**
+- No mention of storage in description
+- "bez podruma" (without cellar)
+- Explicitly states no storage included
+
+**If unclear:** Set to null
+
+## RENOVATION LEVEL ASSESSMENT (1-10):
+
+This is an OBJECTIVE measure of how much effort/investment would be needed to bring the property to comfortable modern living standards.
+
+**Rating Scale:**
+- **1-2**: Uninhabitable. Major structural issues, no utilities, dangerous conditions. Complete gut renovation needed.
+- **3-4**: Needs significant work. Outdated everything (bathroom, kitchen, floors). Would need €20k+ investment.
+- **5-6**: Dated but livable. 80s-90s aesthetics, functional but old. Cosmetic updates needed. €10-20k investment.
+- **7-8**: Good condition. Minor updates needed. Modern enough for most people. €5-10k for personal touches.
+- **9-10**: Move-in ready modern. Contemporary finishes, new appliances, no work needed. Modern luxury at 10.
+
+**CRITICAL: NEW CONSTRUCTION / UNDER CONSTRUCTION:**
+When images show ONLY:
+- 3D renders/visualizations of the apartment
+- Exterior shots of building under construction
+- Floor plans
+- Building site photos
+- "Vizualizacija" or render images
+
+**→ This is NEW CONSTRUCTION being built. Rate it 9-10!**
+- These will be BRAND NEW when finished
+- Do NOT rate them low just because you can't see real interior
+- "Novogradnja" (new construction) = renovation_level 9-10
+- "U izgradnji" (under construction) = renovation_level 9-10
+
+**Assessment Factors (from REAL interior images only):**
+- Kitchen: Old cabinets/appliances vs modern fitted kitchen
+- Bathroom: Dated tiles/fixtures vs modern walk-in shower, floating vanity
+- Flooring: Worn parquet/linoleum vs new hardwood/tile
+- Walls: Peeling paint/wallpaper vs fresh modern finish
+- Windows: Old wooden frames vs PVC double-glazing
+- Overall aesthetic: 70s/80s/90s feel vs contemporary design
+- Fixtures: Brass/gold dated fixtures vs modern chrome/matte
+
+**IMPORTANT**: If only SOME rooms need renovation, average it out. A modern kitchen but dated bathroom might be 7.
+
+**If no REAL interior images available, estimate based on:**
+- "Novogradnja" or new construction = **9-10** (will be brand new)
+- "U izgradnji" (under construction) = **9-10**
+- Year built 2020+ = **8-10**
+- Year built 2010-2019 = **7-8**
+- Year built 2000-2009 = **6-7**
+- Year built 1990-1999 = **5-6**
+- Year built before 1990 = **4-5** (unless renovated)
+- "Potrebna adaptacija" in description = **3-5**
+- ROH_BAU = **3** (unfinished shell, needs finishing but structurally new)
+
 ## CROATIAN TERMS:
 - Novogradnja = new construction (is_new_construction: true)
 - Roh-bau / gruba gradnja = ROH_BAU
@@ -176,97 +257,17 @@ The "Lokacija" field contains the REAL location. It follows this structure:
 - Stambena površina = living area
 - Prizemlje = ground floor
 - Garaža / garažno mjesto = GARAGE parking
-- Soba = room
-- Spavaća soba = bedroom
-- Dnevni boravak / dnevna soba = living room
-- Kuhinja = kitchen
-- Kupaonica = bathroom
-- WC / toalet = toilet
-- Hodnik = hallway
-- Balkon = balcony
-- Terasa = terrace
-- Ostava = storage
-- Garaža = garage
-- Blagovaonica = dining room
-- Radna soba = office
-
-## ROOM DETECTION - TWO SOURCES:
-
-### SOURCE 1: DESCRIPTION TEXT
-First, extract rooms mentioned in the description. Look for:
-- "X-sobni stan" (X-room apartment) - e.g., "3-sobni" = typically 2 bedrooms + 1 living room
-- "2 spavaće sobe" (2 bedrooms)
-- "dnevni boravak" (living room)
-- "kuhinja s blagovaonicom" (kitchen with dining area)
-- "2 kupaonice" (2 bathrooms)
-- "WC" or "toalet" (separate toilet)
-- "balkon" (balcony), "terasa" (terrace)
-- "ostava" (storage), "garaža" (garage)
-
-For rooms mentioned in description but NOT shown in images:
-- Set image_url to null
-- Set condition to "UNKNOWN" 
-- Set condition_reasoning to "Mentioned in description but no image available"
-- In notes, quote the text that mentions this room
-
-### SOURCE 2: IMAGES
-Then, analyze images to:
-- Confirm rooms mentioned in description
-- Add any additional rooms visible in images
-- Assign condition based on what you SEE
-
-**CRITICAL IMAGE RULES:**
-1. Multiple images may show the SAME ROOM from different angles - create only ONE entry per unique room
-2. For rooms with images, copy the EXACT image URL into image_url field
-3. Merge description info with image info for the same room
-
-**Room Types:**
-- LIVING_ROOM: Main living area, often with sofa, TV (dnevni boravak)
-- BEDROOM: Room with bed (spavaća soba) - create separate entries for each
-- KITCHEN: Cooking area (kuhinja)
-- BATHROOM: Full bath with shower/tub AND toilet (kupaonica)
-- TOILET: Separate WC (WC, toalet)
-- HALLWAY: Corridor, entrance (hodnik)
-- BALCONY: Enclosed or open balcony (balkon)
-- TERRACE: Outdoor terrace/patio (terasa)
-- STORAGE: Pantry, utility room (ostava)
-- GARAGE: Car parking space (garaža)
-- LAUNDRY: Laundry/utility room
-- DINING_ROOM: Dedicated dining area (blagovaonica)
-- OFFICE: Home office/study (radna soba)
-- WALK_IN_CLOSET: Large closet/dressing room (garderoba)
-- EXTERIOR: Building facade, garden, exterior view
-- FLOOR_PLAN: Architectural drawing (tlocrt)
-- OTHER: Anything else
-
-**Condition Assessment (for rooms with images):**
-- NEW: Never used, pristine
-- EXCELLENT: Like new, minimal wear
-- GOOD: Normal wear, well maintained
-- FAIR: Some wear visible, aging
-- NEEDS_WORK: Requires renovation
-- ROH_BAU: Unfinished, bare walls/concrete
-- UNKNOWN: No image available (for description-only rooms)
-
-**IMPORTANT - Condition Reasoning:**
-For rooms WITH images, explain WHY you assigned that condition based on:
-- Wall/paint condition (fresh paint, scuffs, cracks, stains)
-- Flooring state (new tiles, worn parquet, scratches)
-- Fixtures age (modern faucets, dated handles, rusty elements)
-- Appliances (new stainless steel, old white goods)
-- Overall design (contemporary minimalist, 90s style, dated)
-
-For rooms WITHOUT images: "Mentioned in description but no image available"
-
-**Features to Detect:**
-FLOOR_HEATING, AIR_CONDITIONING, FIREPLACE, BUILT_IN_CLOSET, BATHTUB, SHOWER, DOUBLE_SINK, KITCHEN_ISLAND, MODERN_APPLIANCES, LARGE_WINDOWS, HIGH_CEILING, PARQUET_FLOOR, TILE_FLOOR, LAMINATE_FLOOR
+- Potrebna adaptacija / renovacija = needs renovation
+- Kuća = house
+- Zgrada = building
+- Stan = apartment
 
 ## LISTING DATA:
 {listing_json}
 
 {image_instruction}
 
-Extract all listing information AND create ONE room entry per UNIQUE room/space. Use the EXACT image_index from the list. Set null if not found."""
+Extract all listing information. Set null if not found. For renovation_level, provide a justified rating based on what you observe."""
 
 
 class ListingClassifier:
@@ -356,34 +357,46 @@ If you see a county name (županija), use its capital as the city.
 
 ## IMAGES TO ANALYZE ({len(image_urls)} images):
 
-**IMPORTANT RULES:**
-1. Look at EACH image below carefully
-2. Some images may show the SAME ROOM from DIFFERENT ANGLES - create only ONE entry per unique room
-3. For each unique room, set `image_url` to the URL of the BEST image showing that room
-4. The images are numbered - reference them by their URL
+**FIRST: Identify what type of images these are:**
+1. **3D Renders/Visualizations** - Computer-generated images showing how apartment WILL look
+2. **Construction site photos** - Building being built, concrete, scaffolding
+3. **Floor plans** - Technical drawings of layout
+4. **Exterior building shots** - Outside of the building
+5. **Real interior photos** - Actual photos of existing rooms
 
-For each UNIQUE room, output a room object with:
-- room_type: The type of room shown
-- image_url: The FULL URL of the best image for this room
-- condition: The room's condition  
-- condition_reasoning: WHY you assigned this condition (what you SEE in the image)
-- features: List of visible features
-- notes: Brief observation
+**IF images are mostly renders/construction/exterior (new construction):**
+- renovation_level = 9-10 (it will be brand new!)
+- interior_arranged = false (unless explicitly stated furnished)
+- Don't penalize for "can't see real interior" - these are NEW BUILDS
+
+**IF images show REAL interior:**
+Look at ALL images to assess the overall renovation level. Consider:
+- Kitchen condition and style
+- Bathroom fixtures and tiles  
+- Flooring throughout
+- Wall finishes
+- Windows and doors
+- Overall aesthetic and modernity
+
+For interior_arranged: Only count REAL furniture (beds, sofas, wardrobes) in REAL photos.
+- Furniture shown in 3D renders does NOT mean furnished
+- Built-in kitchen = standard, NOT furnished
+
+Also determine building_type from exterior shots if available (house vs apartment building).
 
 **Here are the {len(image_urls)} images to analyze:**
 """
             content_blocks.append({"type": "text", "text": text_instruction})
             
-            # Add each image as an image_url block with its URL label
+            # Add each image as an image_url block
             for i, url in enumerate(image_urls):
-                # Add URL label before image
-                content_blocks.append({"type": "text", "text": f"\n[Image {i}] URL: {url}"})
+                content_blocks.append({"type": "text", "text": f"\n[Image {i}]"})
                 content_blocks.append({
                     "type": "image_url",
                     "image_url": {"url": url}
                 })
         else:
-            text_instruction = base_prompt.replace('{image_instruction}', '## NO IMAGES AVAILABLE - Skip rooms analysis')
+            text_instruction = base_prompt.replace('{image_instruction}', '## NO IMAGES AVAILABLE - Estimate renovation_level from description and property age')
             content_blocks.append({"type": "text", "text": text_instruction})
         
         # Create message with multimodal content
@@ -417,15 +430,12 @@ For each UNIQUE room, output a room object with:
                 parsed = json_module.loads(response_text)
                 result = ClassifiedListing(**parsed)
             
-            # Log room detection results
-            for room in result.rooms:
-                has_url = bool(room.image_url)
-                print(f"[Classifier] Room '{room.room_type}' -> has_url={has_url}, condition={room.condition}")
-            
             print(f"[Classifier] Result: price={result.basic_info.price_euros}, "
                   f"area={result.dimensions.description_living_area_m2}m², "
                   f"phase={result.condition.construction_phase}, "
-                  f"rooms={len(result.rooms)}")
+                  f"renovation_level={result.condition.renovation_level}, "
+                  f"building_type={result.building_specs.building_type}, "
+                  f"interior_arranged={result.building_specs.interior_arranged}")
             
             return result
             

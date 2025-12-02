@@ -1,6 +1,8 @@
 """
 Machine Learning service for real estate price prediction and analysis.
 Supports Linear Regression, KNN, XGBoost, and Decision Trees.
+
+Updated for listings_v2 with renovation_level, distance_from_center, and building_type.
 """
 
 import numpy as np
@@ -75,41 +77,47 @@ class CorrelationResult:
 class MLService:
     """Machine Learning service for real estate analysis.
     
-    Feature Selection based on correlation analysis:
-    - living_area_m2:      0.86 (strongest predictor)
-    - bathroom_count:      0.76  
-    - outdoor_area_m2:     0.76 (premium properties)
-    - bedroom_count:       0.65
-    - has_garage:          0.47 (derived binary)
-    - is_new_construction: 0.33
-    - location_district: categorical (one-hot encoded)
-    
-    Removed (too many UNKNOWN values or redundant):
-    - year_built (redundant with is_new_construction)
-    - heating_system / energy_class (too many UNKNOWN)
+    Feature Selection for listings_v2:
+    - living_area_m2:       Strong predictor (size matters most)
+    - bedroom_count:        Number of bedrooms
+    - bathroom_count:       Bathrooms add value
+    - outdoor_area_m2:      Terrace/balcony premium
+    - renovation_level:     1-10 condition score (NEW in v2)
+    - distance_from_center: km from city center (NEW in v2)
+    - is_house:            Derived from building_type (NEW in v2)
+    - has_garage:          Derived from parking_type
+    - is_new_construction: New build premium
+    - is_furnished:        Interior arranged/furnished (NEW in v2)
+    - has_cellar:          Includes cellar/storage (NEW in v2)
+    - location_district:   Categorical (one-hot encoded)
     """
     
-    # Core numeric features (correlation > 0.4)
+    # Core numeric features
     NUMERIC_FEATURES = [
-        'living_area_m2',    # 0.86 - strongest predictor
-        'bedroom_count',     # 0.65
-        'bathroom_count',    # 0.76
-        'outdoor_area_m2',   # 0.76 - premium properties
+        'living_area_m2',       # Size - strongest predictor
+        'bedroom_count',        # Room count
+        'bathroom_count',       # Bathroom count
+        'outdoor_area_m2',      # Outdoor space premium
+        'renovation_level',     # 1-10 condition score (NEW)
+        'distance_from_center', # Distance from city center in km (NEW)
     ]
     
-    # Derived binary features (created from categoricals)
+    # Derived binary features (created from categoricals/enums)
     DERIVED_FEATURES = [
-        'has_garage',        # 0.47 - parking_type == 'GARAGE'
+        'has_garage',           # parking_type == 'GARAGE'
+        'is_house',             # building_type == 'HOUSE' (NEW)
+        'is_furnished',         # interior_arranged == True (NEW)
+        'has_cellar',           # has_cellar == True (NEW)
     ]
     
-    # Categorical features for one-hot encoding (cleaned location data)
+    # Categorical features for one-hot encoding
     CATEGORICAL_FEATURES = [
-        'location_district',  # Neighborhoods in Varaždin area
+        'location_district',    # Neighborhoods
     ]
     
     # Boolean feature (already 0/1)
     BOOLEAN_FEATURES = [
-        'is_new_construction',  # 0.402
+        'is_new_construction',  # New build premium
     ]
     
     TARGET = 'price_eur'
@@ -131,14 +139,34 @@ class MLService:
         
         # Convert boolean
         if 'is_new_construction' in df.columns:
-            df['is_new_construction'] = df['is_new_construction'].fillna(False).astype(float)
+            df['is_new_construction'] = df['is_new_construction'].fillna(False)
+            df['is_new_construction'] = df['is_new_construction'].astype(float)
         
-        # Create derived binary features (better than raw categoricals)
-        # has_garage: parking_type == 'GARAGE' (correlation: 0.536)
+        # Create derived binary features
+        
+        # has_garage: parking_type == 'GARAGE'
         if 'parking_type' in df.columns:
             df['has_garage'] = (df['parking_type'] == 'GARAGE').astype(float)
         else:
             df['has_garage'] = 0.0
+        
+        # is_house: building_type == 'HOUSE' (NEW in v2)
+        if 'building_type' in df.columns:
+            df['is_house'] = (df['building_type'] == 'HOUSE').astype(float)
+        else:
+            df['is_house'] = 0.0
+        
+        # is_furnished: interior_arranged == True (NEW in v2)
+        if 'interior_arranged' in df.columns:
+            df['is_furnished'] = df['interior_arranged'].fillna(False).astype(float)
+        else:
+            df['is_furnished'] = 0.0
+        
+        # has_cellar: directly from database (NEW in v2)
+        if 'has_cellar' in df.columns:
+            df['has_cellar'] = df['has_cellar'].fillna(False).astype(float)
+        else:
+            df['has_cellar'] = 0.0
         
         return df
     
@@ -146,16 +174,58 @@ class MLService:
         """Get all feature columns used for modeling."""
         return self.NUMERIC_FEATURES + self.DERIVED_FEATURES + self.BOOLEAN_FEATURES
     
-    def _prepare_features(self, df: pd.DataFrame, fit: bool = True) -> tuple:
-        """Prepare features and target for modeling."""
+    def _get_feature_set_config(self, feature_set: str) -> Dict[str, List[str]]:
+        """Get feature configuration for a given feature set."""
+        from ..models.ml import FEATURE_SET_DEFINITIONS, FeatureSet
+        
+        # Default to FULL if not found
+        if feature_set not in [fs.value for fs in FeatureSet]:
+            feature_set = FeatureSet.FULL.value
+        
+        fs_enum = FeatureSet(feature_set)
+        if fs_enum in FEATURE_SET_DEFINITIONS:
+            return FEATURE_SET_DEFINITIONS[fs_enum]
+        
+        # Fallback to full features
+        return {
+            "numeric": self.NUMERIC_FEATURES,
+            "derived": self.DERIVED_FEATURES,
+            "boolean": self.BOOLEAN_FEATURES,
+            "categorical": self.CATEGORICAL_FEATURES,
+        }
+    
+    def _prepare_features(
+        self, 
+        df: pd.DataFrame, 
+        fit: bool = True,
+        feature_set: str = "full",
+        custom_features: Optional[List[str]] = None
+    ) -> tuple:
+        """
+        Prepare features and target for modeling.
+        
+        Args:
+            df: DataFrame with listings
+            fit: Whether to fit the preprocessor
+            feature_set: Which feature set to use (minimal, core, standard, numeric, full)
+            custom_features: Custom list of features (only used when feature_set='custom')
+        """
         # Filter rows with valid target
         df_valid = df[df[self.TARGET].notna()].copy()
         
-        # Get available columns
-        available_numeric = [c for c in self.NUMERIC_FEATURES if c in df_valid.columns]
-        available_derived = [c for c in self.DERIVED_FEATURES if c in df_valid.columns]
-        available_categorical = [c for c in self.CATEGORICAL_FEATURES if c in df_valid.columns]
-        available_boolean = [c for c in self.BOOLEAN_FEATURES if c in df_valid.columns]
+        # Get feature configuration based on feature set
+        if feature_set == "custom" and custom_features:
+            # Parse custom features into categories
+            available_numeric = [f for f in custom_features if f in self.NUMERIC_FEATURES and f in df_valid.columns]
+            available_derived = [f for f in custom_features if f in self.DERIVED_FEATURES and f in df_valid.columns]
+            available_categorical = [f for f in custom_features if f in self.CATEGORICAL_FEATURES and f in df_valid.columns]
+            available_boolean = [f for f in custom_features if f in self.BOOLEAN_FEATURES and f in df_valid.columns]
+        else:
+            config = self._get_feature_set_config(feature_set)
+            available_numeric = [c for c in config["numeric"] if c in df_valid.columns]
+            available_derived = [c for c in config["derived"] if c in df_valid.columns]
+            available_categorical = [c for c in config["categorical"] if c in df_valid.columns]
+            available_boolean = [c for c in config["boolean"] if c in df_valid.columns]
         
         # Fill NaN in numeric features with median
         for col in available_numeric:
@@ -321,6 +391,8 @@ class MLService:
         model_type: ModelType,
         test_size: float = 0.2,
         cv_folds: int = 5,
+        feature_set: str = "full",
+        custom_features: Optional[List[str]] = None,
         **model_kwargs
     ) -> ModelResult:
         """
@@ -331,6 +403,8 @@ class MLService:
             model_type: Type of model to train
             test_size: Proportion of data for testing
             cv_folds: Number of cross-validation folds
+            feature_set: Feature set to use (minimal, core, standard, numeric, full)
+            custom_features: Custom feature list (when feature_set='custom')
             **model_kwargs: Additional model parameters
             
         Returns:
@@ -338,10 +412,14 @@ class MLService:
         """
         # Prepare data
         df = self._prepare_dataframe(listings)
-        X, y, feature_cols, df_valid = self._prepare_features(df, fit=True)
+        X, y, feature_cols, df_valid = self._prepare_features(
+            df, fit=True, feature_set=feature_set, custom_features=custom_features
+        )
         
         if len(X) < 10:
             raise ValueError(f"Not enough data for training. Got {len(X)} samples, need at least 10.")
+        
+        print(f"[ML] Training with feature_set={feature_set}, {len(feature_cols)} features: {feature_cols}")
         
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(
@@ -413,26 +491,41 @@ class MLService:
         corr_cols = [self.TARGET] + self.NUMERIC_FEATURES + self.DERIVED_FEATURES + self.BOOLEAN_FEATURES
         available_cols = [c for c in corr_cols if c in df.columns]
         
-        # Filter valid data
-        df_corr = df[available_cols].dropna()
+        # Filter valid data - drop rows where target is NaN
+        df_corr = df[available_cols].copy()
+        df_corr = df_corr[df_corr[self.TARGET].notna()]
+        
+        # Fill NaN values with column median for numeric columns to avoid correlation NaN
+        for col in available_cols:
+            if df_corr[col].isna().any():
+                median_val = df_corr[col].median()
+                if pd.isna(median_val):
+                    median_val = 0
+                df_corr[col] = df_corr[col].fillna(median_val)
         
         # Calculate correlation matrix
         corr_matrix = df_corr.corr()
         
-        # Convert to dict format
+        # Helper function to safely convert to float, replacing NaN/inf with 0
+        def safe_float(val):
+            if pd.isna(val) or np.isinf(val):
+                return 0.0
+            return float(val)
+        
+        # Convert to dict format, handling NaN values
         corr_dict = {}
         for col in corr_matrix.columns:
             corr_dict[col] = {
-                other_col: float(corr_matrix.loc[col, other_col])
+                other_col: safe_float(corr_matrix.loc[col, other_col])
                 for other_col in corr_matrix.columns
             }
         
         # Get correlations with target
-        target_corr = {
-            col: float(corr_matrix.loc[self.TARGET, col])
-            for col in corr_matrix.columns
-            if col != self.TARGET
-        }
+        target_corr = {}
+        for col in corr_matrix.columns:
+            if col != self.TARGET:
+                val = corr_matrix.loc[self.TARGET, col]
+                target_corr[col] = safe_float(val)
         
         # Sort by absolute correlation
         target_corr = dict(sorted(
@@ -478,6 +571,7 @@ class MLService:
             input_data[col] = [features.get(col, 0) or 0]
         
         # Derived binary features - compute from raw categoricals if provided
+        
         # has_garage
         if 'has_garage' in features:
             input_data['has_garage'] = [float(features.get('has_garage', 0))]
@@ -485,6 +579,28 @@ class MLService:
             input_data['has_garage'] = [1.0 if features.get('parking_type') == 'GARAGE' else 0.0]
         else:
             input_data['has_garage'] = [0.0]
+        
+        # is_house (NEW in v2)
+        if 'is_house' in features:
+            input_data['is_house'] = [float(features.get('is_house', 0))]
+        elif 'building_type' in features:
+            input_data['is_house'] = [1.0 if features.get('building_type') == 'HOUSE' else 0.0]
+        else:
+            input_data['is_house'] = [0.0]
+        
+        # is_furnished (NEW in v2)
+        if 'is_furnished' in features:
+            input_data['is_furnished'] = [float(features.get('is_furnished', 0))]
+        elif 'interior_arranged' in features:
+            input_data['is_furnished'] = [1.0 if features.get('interior_arranged') else 0.0]
+        else:
+            input_data['is_furnished'] = [0.0]
+        
+        # has_cellar (NEW in v2)
+        if 'has_cellar' in features:
+            input_data['has_cellar'] = [1.0 if features.get('has_cellar') else 0.0]
+        else:
+            input_data['has_cellar'] = [0.0]
         
         # Categorical features (will be one-hot encoded by preprocessor)
         for col in self.CATEGORICAL_FEATURES:
@@ -513,10 +629,14 @@ class MLService:
             'avg_area': float(df['living_area_m2'].mean()) if 'living_area_m2' in df.columns else 0,
             'median_area': float(df['living_area_m2'].median()) if 'living_area_m2' in df.columns else 0,
             'avg_bedrooms': float(df['bedroom_count'].mean()) if 'bedroom_count' in df.columns else 0,
+            'avg_renovation_level': float(df['renovation_level'].mean()) if 'renovation_level' in df.columns else 0,
+            'avg_distance_from_center': float(df['distance_from_center'].mean()) if 'distance_from_center' in df.columns else 0,
             'cities': df['location_city'].dropna().unique().tolist() if 'location_city' in df.columns else [],
             'city_counts': df['location_city'].value_counts().to_dict() if 'location_city' in df.columns else {},
             'construction_phase_counts': df['construction_phase'].value_counts().to_dict() if 'construction_phase' in df.columns else {},
+            'building_type_counts': df['building_type'].value_counts().to_dict() if 'building_type' in df.columns else {},
             'new_construction_pct': float(df['is_new_construction'].mean() * 100) if 'is_new_construction' in df.columns else 0,
+            'house_pct': float(df['is_house'].mean() * 100) if 'is_house' in df.columns else 0,
         }
         
         # Handle NaN values
@@ -537,4 +657,3 @@ def get_ml_service() -> MLService:
     if _ml_service is None:
         _ml_service = MLService()
     return _ml_service
-

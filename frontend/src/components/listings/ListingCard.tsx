@@ -3,6 +3,11 @@ import {
   Listing,
   ConstructionPhase,
   ConstructionPhaseLabels,
+  BuildingType,
+  BuildingTypeLabels,
+  getRenovationLevelInfo,
+  formatDistance,
+  getInteriorArrangedLabel,
 } from "@/types/listing";
 
 interface ListingCardProps {
@@ -42,6 +47,7 @@ export function ListingCard({ listing }: ListingCardProps) {
 
   // Use living_area_m2 as the trusted area
   const displayArea = listing.living_area_m2 || listing.metadata_area_m2;
+  const renovationInfo = getRenovationLevelInfo(listing.renovation_level);
 
   return (
     <Link href={`/listings/${listing.id}`} className="group block h-full">
@@ -72,6 +78,24 @@ export function ListingCard({ listing }: ListingCardProps) {
                 NEW BUILD
               </span>
             )}
+            {listing.building_type && (
+              <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                listing.building_type === BuildingType.HOUSE 
+                  ? "bg-amber-500/90 text-white" 
+                  : "bg-violet-500/90 text-white"
+              }`}>
+                {listing.building_type === BuildingType.HOUSE ? "🏠" : "🏢"} {BuildingTypeLabels[listing.building_type]}
+              </span>
+            )}
+            {listing.interior_arranged !== undefined && listing.interior_arranged !== null && (
+              <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                listing.interior_arranged 
+                  ? "bg-teal-500/90 text-white" 
+                  : "bg-slate-500/90 text-white"
+              }`}>
+                {getInteriorArrangedLabel(listing.interior_arranged).icon} {getInteriorArrangedLabel(listing.interior_arranged).label}
+              </span>
+            )}
             {listing.area_conflict && (
               <span className="px-2 py-1 text-xs font-medium bg-amber-500/90 text-white rounded-full" title="Area discrepancy detected">
                 ⚠️ Check
@@ -79,9 +103,18 @@ export function ListingCard({ listing }: ListingCardProps) {
             )}
           </div>
 
+          {/* Renovation Level Badge (top right) */}
+          {listing.renovation_level && (
+            <div className="absolute top-3 right-3">
+              <div className={`px-2.5 py-1 rounded-full text-xs font-bold text-white ${renovationInfo.color}`} title={renovationInfo.description}>
+                {renovationInfo.label}
+              </div>
+            </div>
+          )}
+
           {/* Image Count */}
           {listing.images && listing.images.length > 1 && (
-            <div className="absolute top-3 right-3">
+            <div className="absolute bottom-14 right-3">
               <span className="px-2 py-1 text-xs font-medium bg-slate-900/70 text-white rounded-full backdrop-blur-sm flex items-center gap-1">
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -128,14 +161,15 @@ export function ListingCard({ listing }: ListingCardProps) {
                 <span>{listing.bedroom_count} bed</span>
               </div>
             )}
-            {listing.floor_level && (
+            {listing.distance_from_center !== undefined && listing.distance_from_center !== null && (
               <div className="flex items-center gap-1.5 text-sm text-slate-300">
                 <div className="w-7 h-7 rounded-lg bg-slate-800/80 flex items-center justify-center">
                   <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                   </svg>
                 </div>
-                <span>Floor {listing.floor_level}</span>
+                <span>{formatDistance(listing.distance_from_center)}</span>
               </div>
             )}
           </div>

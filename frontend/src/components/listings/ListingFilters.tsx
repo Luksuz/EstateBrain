@@ -5,8 +5,10 @@ import {
   ListingFilter,
   ConstructionPhase,
   HeatingSystem,
+  BuildingType,
   ConstructionPhaseLabels,
   HeatingSystemLabels,
+  BuildingTypeLabels,
 } from "@/types/listing";
 
 interface ListingFiltersProps {
@@ -85,6 +87,44 @@ export function ListingFilters({ filters, onFilterChange }: ListingFiltersProps)
       {isExpanded && (
         <div className="mt-4 pt-4 border-t border-slate-800/50">
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Building Type */}
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                Building Type
+              </label>
+              <select
+                value={filters.building_type || ""}
+                onChange={(e) =>
+                  updateFilter("building_type", e.target.value as BuildingType | "")
+                }
+                className="input-field w-full text-sm py-2.5"
+              >
+                <option value="">All Types</option>
+                {Object.entries(BuildingTypeLabels).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Interior Arranged */}
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                Interior
+              </label>
+              <select
+                value={filters.interior_arranged === undefined ? "" : filters.interior_arranged ? "true" : "false"}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  updateFilter("interior_arranged", val === "" ? undefined : val === "true");
+                }}
+                className="input-field w-full text-sm py-2.5"
+              >
+                <option value="">Any</option>
+                <option value="true">🛋️ Furnished</option>
+                <option value="false">📦 Unfurnished</option>
+              </select>
+            </div>
+
             {/* Construction Phase */}
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1.5">
@@ -121,6 +161,20 @@ export function ListingFilters({ filters, onFilterChange }: ListingFiltersProps)
                   <option key={value} value={value}>{label}</option>
                 ))}
               </select>
+            </div>
+
+            {/* Location */}
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                City
+              </label>
+              <input
+                type="text"
+                value={filters.location_city || ""}
+                onChange={(e) => updateFilter("location_city", e.target.value)}
+                placeholder="Any location"
+                className="input-field w-full text-sm py-2.5"
+              />
             </div>
 
             {/* Price Range */}
@@ -185,20 +239,6 @@ export function ListingFilters({ filters, onFilterChange }: ListingFiltersProps)
               />
             </div>
 
-            {/* Location */}
-            <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1.5">
-                City
-              </label>
-              <input
-                type="text"
-                value={filters.location_city || ""}
-                onChange={(e) => updateFilter("location_city", e.target.value)}
-                placeholder="Any location"
-                className="input-field w-full text-sm py-2.5"
-              />
-            </div>
-
             {/* Bedrooms */}
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1.5">
@@ -213,6 +253,66 @@ export function ListingFilters({ filters, onFilterChange }: ListingFiltersProps)
                 placeholder="Any"
                 className="input-field w-full text-sm py-2.5"
               />
+            </div>
+
+            {/* Renovation Level Range */}
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                Min Renovation Level
+              </label>
+              <select
+                value={filters.min_renovation_level || ""}
+                onChange={(e) =>
+                  updateFilter("min_renovation_level", e.target.value ? Number(e.target.value) : undefined)
+                }
+                className="input-field w-full text-sm py-2.5"
+              >
+                <option value="">Any</option>
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((level) => (
+                  <option key={level} value={level}>{level}/10</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                Max Renovation Level
+              </label>
+              <select
+                value={filters.max_renovation_level || ""}
+                onChange={(e) =>
+                  updateFilter("max_renovation_level", e.target.value ? Number(e.target.value) : undefined)
+                }
+                className="input-field w-full text-sm py-2.5"
+              >
+                <option value="">Any</option>
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((level) => (
+                  <option key={level} value={level}>{level}/10</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Max Distance from Center */}
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                Max Distance (km)
+              </label>
+              <select
+                value={filters.max_distance_from_center || ""}
+                onChange={(e) =>
+                  updateFilter("max_distance_from_center", e.target.value ? Number(e.target.value) : undefined)
+                }
+                className="input-field w-full text-sm py-2.5"
+              >
+                <option value="">Any</option>
+                <option value="1">Within 1 km</option>
+                <option value="2">Within 2 km</option>
+                <option value="5">Within 5 km</option>
+                <option value="10">Within 10 km</option>
+                <option value="15">Within 15 km</option>
+                <option value="20">Within 20 km</option>
+                <option value="30">Within 30 km</option>
+              </select>
             </div>
           </div>
 

@@ -3,21 +3,107 @@ Parser that extracts raw data from HTML and uses LLM for classification.
 """
 
 import re
+import json
+import math
 from bs4 import BeautifulSoup
 from typing import Optional, List
 from urllib.parse import urljoin
 
 from ..models.listing import (
     ListingCreate,
+    ListingSource,
     ImageData,
-    Room,
-    RoomType,
-    RoomCondition,
+    BuildingType,
     ConstructionPhase,
     HeatingSystem,
     ParkingType,
 )
 from ..config import get_settings
+
+
+# District coordinates for Varaždin county (fallback if DB not available)
+# Distance is calculated from listing to its district center
+DISTRICT_COORDS = {
+    "Varaždin": (46.307491, 16.335753),
+    "Gornji Kneginec": (46.25051, 16.37555),
+    "Ivanec": (46.23333, 16.13333),
+    "Klenovnik": (46.27028, 16.07000),
+    "Lepoglava": (46.21056, 16.03556),
+    "Ludbreg": (46.25000, 16.63333),
+    "Maruševec": (46.28262, 16.18539),
+    "Novi Marof": (46.16667, 16.33333),
+    "Petrijanec": (46.34917, 16.22500),
+    "Sračinec": (46.32944, 16.27889),
+    "Trnovec Bartolovečki": (46.29472, 16.39889),
+    "Varaždinske Toplice": (46.2300, 16.4014),
+    "Veliki Bukovec": (46.07800, 16.02225),
+    "Visoko": (46.20, 16.15),
+}
+
+# Default center (Varaždin) for unknown districts
+DEFAULT_CENTER_LAT = 46.307491
+DEFAULT_CENTER_LNG = 16.335753
+
+
+def get_district_center(district_name: Optional[str]) -> tuple[float, float]:
+    """
+    Get the center coordinates for a district.
+    Falls back to Varaždin center if district not found.
+    
+    Args:
+        district_name: Name of the district
+        
+    Returns:
+        Tuple of (latitude, longitude)
+    """
+    if not district_name:
+        return (DEFAULT_CENTER_LAT, DEFAULT_CENTER_LNG)
+    
+    # Try exact match first
+    if district_name in DISTRICT_COORDS:
+        return DISTRICT_COORDS[district_name]
+    
+    # Try case-insensitive match
+    district_lower = district_name.lower()
+    for name, coords in DISTRICT_COORDS.items():
+        if name.lower() == district_lower:
+            return coords
+    
+    # Try partial match (district name contains or is contained in)
+    for name, coords in DISTRICT_COORDS.items():
+        if name.lower() in district_lower or district_lower in name.lower():
+            return coords
+    
+    # Default to Varaždin
+    return (DEFAULT_CENTER_LAT, DEFAULT_CENTER_LNG)
+
+
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    Calculate the great-circle distance between two points on Earth using the Haversine formula.
+    
+    Args:
+        lat1, lon1: Coordinates of the first point (in degrees)
+        lat2, lon2: Coordinates of the second point (in degrees)
+        
+    Returns:
+        Distance in kilometers
+    """
+    # Earth's radius in kilometers
+    R = 6371.0
+    
+    # Convert degrees to radians
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lon = math.radians(lon2 - lon1)
+    
+    # Haversine formula
+    a = math.sin(delta_lat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    
+    distance = R * c
+    return round(distance, 2)
 
 
 class SearchPageParser:
@@ -129,7 +215,15 @@ class ListingParser:
         else:
             listing_data["ad_id"] = None
         
-        # 4. IMAGES
+        # 4. COORDINATES
+        coordinates = cls._extract_coordinates(soup)
+        if coordinates:
+            listing_data["latitude"] = coordinates["lat"]
+            listing_data["longitude"] = coordinates["lng"]
+            listing_data["location_approximate"] = coordinates.get("approximate", False)
+            print(f"[Parser] Found coordinates: lat={coordinates['lat']}, lng={coordinates['lng']}")
+        
+        # 5. IMAGES
         images = []
         gallery_items = soup.select(".ClassifiedDetailGallery-sliderListItem")
         for item in gallery_items:
@@ -147,7 +241,7 @@ class ListingParser:
         listing_data["images"] = images
         listing_data["image_count"] = len(images)
         
-        # 5. HIGHLIGHTED ATTRIBUTES
+        # 6. HIGHLIGHTED ATTRIBUTES
         highlighted_attrs = {}
         highlighted_items = soup.select(".ClassifiedDetailHighlightedAttributes-listItem")
         for item in highlighted_items:
@@ -159,7 +253,7 @@ class ListingParser:
                 highlighted_attrs[key] = val
         listing_data["highlighted_attributes"] = highlighted_attrs
         
-        # 6. BASIC DETAILS
+        # 7. BASIC DETAILS
         basic_details = {}
         detail_terms = soup.select(".ClassifiedDetailBasicDetails-listTerm")
         detail_defs = soup.select(".ClassifiedDetailBasicDetails-listDefinition")
@@ -169,11 +263,11 @@ class ListingParser:
             basic_details[key] = value
         listing_data["basic_details"] = basic_details
         
-        # 7. DESCRIPTION
+        # 8. DESCRIPTION
         desc_elem = soup.select_one(".ClassifiedDetailDescription-text")
         listing_data["description"] = desc_elem.get_text(separator="\n", strip=True) if desc_elem else None
         
-        # 8. ADDITIONAL INFO
+        # 9. ADDITIONAL INFO
         additional_info = {}
         property_groups = soup.select(".ClassifiedDetailPropertyGroups-group")
         for group in property_groups:
@@ -184,7 +278,7 @@ class ListingParser:
                 additional_info[title] = [item.get_text(strip=True) for item in items]
         listing_data["additional_info"] = additional_info
         
-        # 9. SELLER/OWNER DETAILS
+        # 10. SELLER/OWNER DETAILS
         owner_data = {}
         owner_section = soup.select_one(".ClassifiedDetailOwnerDetails")
         if owner_section:
@@ -198,7 +292,7 @@ class ListingParser:
                     owner_data["website"] = link.get("href") if link else None
         listing_data["seller"] = owner_data
         
-        # 10. CATEGORY PATH
+        # 11. CATEGORY PATH
         breadcrumbs = []
         breadcrumb_items = soup.select(".breadcrumb-item a.link")
         for item in breadcrumb_items:
@@ -206,6 +300,54 @@ class ListingParser:
         listing_data["category_path"] = breadcrumbs
         
         return listing_data
+
+    @classmethod
+    def _extract_coordinates(cls, soup: BeautifulSoup) -> Optional[dict]:
+        """
+        Extract latitude and longitude from the ClassifiedDetailMap script tag.
+        
+        Returns:
+            Dict with 'lat', 'lng', and 'approximate' keys, or None if not found
+        """
+        # Find all script tags
+        script_tags = soup.find_all("script")
+        
+        for script in script_tags:
+            script_content = script.string
+            if not script_content:
+                continue
+            
+            # Look for the ClassifiedDetailMap boot data
+            if "ClassifiedDetailMap" in script_content and "mapData" in script_content:
+                try:
+                    # Extract the JSON object from app.boot.push(...)
+                    # Pattern: app.boot.push({...})
+                    match = re.search(r'app\.boot\.push\((.*?)\);?\s*$', script_content, re.DOTALL)
+                    if match:
+                        json_str = match.group(1)
+                        data = json.loads(json_str)
+                        
+                        # Navigate to the coordinates
+                        map_data = data.get("values", {}).get("mapData", {})
+                        default_marker = map_data.get("defaultMarker", {})
+                        
+                        lat = default_marker.get("lat")
+                        lng = default_marker.get("lng")
+                        approximate = default_marker.get("approximate", False)
+                        
+                        if lat is not None and lng is not None:
+                            print(f"[Parser] Found coordinates: lat={lat}, lng={lng}, approximate={approximate}")
+                            return {
+                                "lat": lat,
+                                "lng": lng,
+                                "approximate": approximate
+                            }
+                except (json.JSONDecodeError, KeyError) as e:
+                    print(f"[Parser] Failed to parse map coordinates: {e}")
+                    continue
+        
+        print("[Parser] No coordinates found in page")
+        return None
 
     @classmethod
     def _convert_images(cls, raw_images: list) -> list[ImageData]:
@@ -265,63 +407,15 @@ class ListingParser:
         return mapping.get(parking.upper(), ParkingType.UNKNOWN)
 
     @classmethod
-    def _map_room_type(cls, room_type: Optional[str]) -> RoomType:
-        """Map string to RoomType enum."""
-        if not room_type:
-            return RoomType.OTHER
+    def _map_building_type(cls, building_type: Optional[str]) -> Optional[BuildingType]:
+        """Map string to BuildingType enum."""
+        if not building_type:
+            return None
         mapping = {
-            "LIVING_ROOM": RoomType.LIVING_ROOM,
-            "BEDROOM": RoomType.BEDROOM,
-            "KITCHEN": RoomType.KITCHEN,
-            "BATHROOM": RoomType.BATHROOM,
-            "TOILET": RoomType.TOILET,
-            "HALLWAY": RoomType.HALLWAY,
-            "BALCONY": RoomType.BALCONY,
-            "TERRACE": RoomType.TERRACE,
-            "STORAGE": RoomType.STORAGE,
-            "GARAGE": RoomType.GARAGE,
-            "LAUNDRY": RoomType.LAUNDRY,
-            "DINING_ROOM": RoomType.DINING_ROOM,
-            "OFFICE": RoomType.OFFICE,
-            "WALK_IN_CLOSET": RoomType.WALK_IN_CLOSET,
-            "EXTERIOR": RoomType.EXTERIOR,
-            "FLOOR_PLAN": RoomType.FLOOR_PLAN,
-            "OTHER": RoomType.OTHER,
+            "HOUSE": BuildingType.HOUSE,
+            "BUILDING": BuildingType.BUILDING,
         }
-        return mapping.get(room_type.upper(), RoomType.OTHER)
-
-    @classmethod
-    def _map_room_condition(cls, condition: Optional[str]) -> RoomCondition:
-        """Map string to RoomCondition enum."""
-        if not condition:
-            return RoomCondition.UNKNOWN
-        mapping = {
-            "NEW": RoomCondition.NEW,
-            "EXCELLENT": RoomCondition.EXCELLENT,
-            "GOOD": RoomCondition.GOOD,
-            "FAIR": RoomCondition.FAIR,
-            "NEEDS_WORK": RoomCondition.NEEDS_WORK,
-            "ROH_BAU": RoomCondition.ROH_BAU,
-            "UNKNOWN": RoomCondition.UNKNOWN,
-        }
-        return mapping.get(condition.upper(), RoomCondition.UNKNOWN)
-
-    @classmethod
-    def _convert_rooms(cls, classifier_rooms: list) -> list[Room]:
-        """Convert classifier room analysis to Room objects."""
-        rooms = []
-        for r in classifier_rooms:
-            rooms.append(Room(
-                room_type=cls._map_room_type(r.room_type),
-                image_url=r.image_url,
-                condition=cls._map_room_condition(r.condition),
-                condition_reasoning=r.condition_reasoning,
-                features=r.features or [],
-                notes=r.notes,
-                estimated_area_m2=r.estimated_area_m2,
-                from_description=r.from_description,
-            ))
-        return rooms
+        return mapping.get(building_type.upper())
 
     @classmethod
     async def parse(cls, html_content: str, url: str, location_context: dict = None) -> ListingCreate:
@@ -357,19 +451,35 @@ class ListingParser:
             classifier = ListingClassifier()
             c = await classifier.classify(raw_data, location_context=location_context)
             
-            # Convert rooms from classifier
-            rooms = cls._convert_rooms(c.rooms)
-            print(f"[Parser] Detected {len(rooms)} rooms from images")
+            print(f"[Parser] Classification complete: renovation_level={c.condition.renovation_level}, building_type={c.building_specs.building_type}")
+            
+            # Calculate distance from listing to its district center
+            listing_lat = raw_data.get("latitude")
+            listing_lng = raw_data.get("longitude")
+            district = c.location.district
+            
+            distance_from_center = None
+            if listing_lat is not None and listing_lng is not None:
+                # Get district center coordinates
+                center_lat, center_lng = get_district_center(district)
+                distance_from_center = haversine_distance(listing_lat, listing_lng, center_lat, center_lng)
+                print(f"[Parser] Distance from {district or 'Varaždin'} center: {distance_from_center} km")
             
             return ListingCreate(
                 external_id=c.basic_info.listing_id or raw_data.get("ad_id"),
                 url=url,
+                source=ListingSource.NJUSKALO,
+                source_id=raw_data.get("ad_id"),
                 title=c.basic_info.title or raw_data.get("title"),
                 price_eur=c.basic_info.price_euros,
                 # Location
                 location_city=c.location.city,
                 location_district=c.location.district,
                 floor_level=c.location.floor_level,
+                latitude=listing_lat,
+                longitude=listing_lng,
+                location_approximate=raw_data.get("location_approximate"),
+                distance_from_center=distance_from_center,
                 # Dimensions
                 metadata_area_m2=c.dimensions.metadata_area_m2,
                 living_area_m2=c.dimensions.description_living_area_m2,
@@ -381,14 +491,17 @@ class ListingParser:
                 bedroom_count=c.building_specs.bedroom_count,
                 bathroom_count=c.building_specs.bathroom_count,
                 parking_type=cls._map_parking_type(c.building_specs.parking_type),
+                building_type=cls._map_building_type(c.building_specs.building_type),
+                interior_arranged=c.building_specs.interior_arranged,
+                has_cellar=c.building_specs.has_cellar,
                 # Condition
                 construction_phase=cls._map_construction_phase(c.condition.construction_phase),
+                renovation_level=c.condition.renovation_level,
                 heating_system=cls._map_heating_system(c.condition.heating_system),
                 energy_class=c.condition.energy_class,
                 # Content
                 description=raw_data.get("description"),
                 images=images,
-                rooms=rooms,
                 additional_info=raw_data.get("additional_info", {}),
                 # Seller
                 seller_name=raw_data.get("seller", {}).get("name"),
@@ -404,14 +517,30 @@ class ListingParser:
     @classmethod
     def _create_listing_without_llm(cls, raw_data: dict, url: str, images: list[ImageData]) -> ListingCreate:
         """Create a listing without LLM classification (fallback)."""
+        # Calculate distance from default Varaždin center
+        listing_lat = raw_data.get("latitude")
+        listing_lng = raw_data.get("longitude")
+        distance_from_center = None
+        if listing_lat is not None and listing_lng is not None:
+            distance_from_center = haversine_distance(
+                listing_lat, listing_lng,
+                DEFAULT_CENTER_LAT, DEFAULT_CENTER_LNG
+            )
+        
         return ListingCreate(
             external_id=raw_data.get("ad_id"),
             url=url,
+            source=ListingSource.NJUSKALO,
+            source_id=raw_data.get("ad_id"),
             title=raw_data.get("title"),
             price_eur=None,
             location_city=None,
             location_district=None,
             floor_level=None,
+            latitude=listing_lat,
+            longitude=listing_lng,
+            location_approximate=raw_data.get("location_approximate"),
+            distance_from_center=distance_from_center,
             metadata_area_m2=None,
             living_area_m2=None,
             outdoor_area_m2=None,
@@ -421,7 +550,11 @@ class ListingParser:
             bedroom_count=None,
             bathroom_count=None,
             parking_type=ParkingType.UNKNOWN,
+            building_type=None,
+            interior_arranged=None,
+            has_cellar=None,
             construction_phase=ConstructionPhase.UNKNOWN,
+            renovation_level=None,
             heating_system=HeatingSystem.UNKNOWN,
             energy_class=None,
             description=raw_data.get("description"),

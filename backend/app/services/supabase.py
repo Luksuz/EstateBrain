@@ -8,6 +8,9 @@ from ..models.scrape_job import JobStatus, ScrapeJobCreate, ScrapeJobResponse, S
 
 _supabase_client: Optional[Client] = None
 
+# Table name for listings v2
+LISTINGS_TABLE = "listings_v2"
+
 
 def get_supabase_client() -> Client:
     """Get or create Supabase client singleton."""
@@ -75,7 +78,7 @@ class SupabaseService:
             return ScrapeJobResponse(**result.data[0])
         return None
     
-    # ==================== LISTINGS ====================
+    # ==================== LISTINGS (v2) ====================
     
     def _listing_to_dict(self, listing: ListingCreate) -> dict:
         """Convert ListingCreate to database dictionary."""
@@ -88,6 +91,10 @@ class SupabaseService:
             "location_city": listing.location_city,
             "location_district": listing.location_district,
             "floor_level": listing.floor_level,
+            "latitude": listing.latitude,
+            "longitude": listing.longitude,
+            "location_approximate": listing.location_approximate,
+            "distance_from_center": listing.distance_from_center,
             # Dimensions
             "metadata_area_m2": listing.metadata_area_m2,
             "living_area_m2": listing.living_area_m2,
@@ -99,14 +106,17 @@ class SupabaseService:
             "bedroom_count": listing.bedroom_count,
             "bathroom_count": listing.bathroom_count,
             "parking_type": listing.parking_type.value,
+            "building_type": listing.building_type.value if listing.building_type else None,
+            "interior_arranged": listing.interior_arranged,
+            "has_cellar": listing.has_cellar,
             # Condition
             "construction_phase": listing.construction_phase.value,
+            "renovation_level": listing.renovation_level,
             "heating_system": listing.heating_system.value,
             "energy_class": listing.energy_class,
             # Content
             "description": listing.description,
             "images": [img.model_dump() for img in listing.images],
-            "rooms": [room.model_dump() for room in listing.rooms],
             "additional_info": listing.additional_info,
             # Seller
             "seller_name": listing.seller_name,
@@ -119,18 +129,18 @@ class SupabaseService:
     async def create_listing(self, listing: ListingCreate) -> ListingResponse:
         """Create a new listing."""
         data = self._listing_to_dict(listing)
-        result = self.client.table("listings").insert(data).execute()
+        result = self.client.table(LISTINGS_TABLE).insert(data).execute()
         return ListingResponse(**result.data[0])
     
     async def upsert_listing(self, listing: ListingCreate) -> ListingResponse:
         """Create or update a listing based on URL."""
         data = self._listing_to_dict(listing)
-        result = self.client.table("listings").upsert(data, on_conflict="url").execute()
+        result = self.client.table(LISTINGS_TABLE).upsert(data, on_conflict="url").execute()
         return ListingResponse(**result.data[0])
     
     async def get_listing(self, listing_id: str) -> Optional[ListingResponse]:
         """Get a listing by ID."""
-        result = self.client.table("listings").select("*").eq("id", listing_id).execute()
+        result = self.client.table(LISTINGS_TABLE).select("*").eq("id", listing_id).execute()
         if result.data:
             return ListingResponse(**result.data[0])
         return None
@@ -144,7 +154,7 @@ class SupabaseService:
         sort_desc: bool = True,
     ) -> tuple[list[ListingResponse], int]:
         """List listings with filters and pagination."""
-        query = self.client.table("listings").select("*", count="exact")
+        query = self.client.table(LISTINGS_TABLE).select("*", count="exact")
         
         # Apply filters
         if filters:
@@ -164,10 +174,20 @@ class SupabaseService:
                 query = query.eq("heating_system", filters.heating_system.value)
             if filters.parking_type:
                 query = query.eq("parking_type", filters.parking_type.value)
+            if filters.building_type:
+                query = query.eq("building_type", filters.building_type.value)
+            if filters.interior_arranged is not None:
+                query = query.eq("interior_arranged", filters.interior_arranged)
             if filters.is_new_construction is not None:
                 query = query.eq("is_new_construction", filters.is_new_construction)
             if filters.min_bedrooms is not None:
                 query = query.gte("bedroom_count", filters.min_bedrooms)
+            if filters.min_renovation_level is not None:
+                query = query.gte("renovation_level", filters.min_renovation_level)
+            if filters.max_renovation_level is not None:
+                query = query.lte("renovation_level", filters.max_renovation_level)
+            if filters.max_distance_from_center is not None:
+                query = query.lte("distance_from_center", filters.max_distance_from_center)
             
             # ML feature completeness filter - require essential features for ML predictions
             if filters.require_ml_features:
@@ -194,7 +214,7 @@ class SupabaseService:
     
     async def delete_listing(self, listing_id: str) -> bool:
         """Delete a listing by ID."""
-        result = self.client.table("listings").delete().eq("id", listing_id).execute()
+        result = self.client.table(LISTINGS_TABLE).delete().eq("id", listing_id).execute()
         return len(result.data) > 0
     
     async def get_existing_urls(self, urls: list[str]) -> set[str]:
@@ -219,7 +239,7 @@ class SupabaseService:
         for i in range(0, len(urls), batch_size):
             batch = urls[i:i + batch_size]
             try:
-                result = self.client.table("listings").select("url").in_("url", batch).execute()
+                result = self.client.table(LISTINGS_TABLE).select("url").in_("url", batch).execute()
                 existing.update(row["url"] for row in result.data)
             except Exception as e:
                 print(f"[Supabase] Error checking existing URLs batch {i//batch_size}: {e}")
@@ -229,7 +249,7 @@ class SupabaseService:
     
     async def get_listing_by_url(self, url: str) -> Optional[ListingResponse]:
         """Get a listing by URL."""
-        result = self.client.table("listings").select("*").eq("url", url).execute()
+        result = self.client.table(LISTINGS_TABLE).select("*").eq("url", url).execute()
         if result.data:
             return ListingResponse(**result.data[0])
         return None

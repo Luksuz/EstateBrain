@@ -29,7 +29,8 @@ class FirecrawlService:
             "url": url,
             "onlyMainContent": False,
             "maxAge": max_age,
-            "formats": ["html"],
+            "formats": ["rawHtml"],  # Use rawHtml to preserve script tags with coordinates
+            "waitFor": 2000,  # Wait 2 seconds for JS to execute
         }
         
         headers = {
@@ -48,9 +49,9 @@ class FirecrawlService:
                 
                 data = response.json()
                 
-                # Extract HTML from response
+                # Extract HTML from response (try rawHtml first, fallback to html)
                 if data.get("success") and data.get("data"):
-                    return data["data"].get("html")
+                    return data["data"].get("rawHtml") or data["data"].get("html")
                 
                 return None
                 

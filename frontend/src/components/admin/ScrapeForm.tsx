@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { api, LocationData } from "@/lib/api";
+import { ScrapeSource, SourceInfo } from "@/types/listing";
 
 interface ScrapeFormProps {
   onJobCreated: () => void;
@@ -11,6 +12,10 @@ type ScrapeMode = "location" | "search" | "urls";
 
 export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
   const [mode, setMode] = useState<ScrapeMode>("location");
+  
+  // Source selection
+  const [sources, setSources] = useState<SourceInfo[]>([]);
+  const [selectedSource, setSelectedSource] = useState<ScrapeSource>(ScrapeSource.NJUSKALO);
   
   // Location mode state
   const [locations, setLocations] = useState<LocationData>({});
@@ -32,29 +37,35 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
   const [loadingLocations, setLoadingLocations] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{
+    source?: string;
     totalListings: number;
     newListings?: number;
     existingListings?: number;
     jobId: string;
   } | null>(null);
 
-  // Load locations on mount
+  // Load locations and sources on mount
   useEffect(() => {
-    const loadLocations = async () => {
+    const loadData = async () => {
       try {
-        const data = await api.getAllLocations();
-        setLocations(data);
+        // Load sources
+        const sourcesData = await api.getScrapeSources();
+        setSources(sourcesData.sources);
+        
+        // Load locations
+        const locationsData = await api.getAllLocations();
+        setLocations(locationsData);
         // Default to Varaždinska
-        if (data["Varaždinska"]) {
+        if (locationsData["Varaždinska"]) {
           setSelectedZupanija("Varaždinska");
         }
       } catch (err) {
-        console.error("Failed to load locations:", err);
+        console.error("Failed to load data:", err);
       } finally {
         setLoadingLocations(false);
       }
     };
-    loadLocations();
+    loadData();
   }, []);
 
   const districts = selectedZupanija ? locations[selectedZupanija] || [] : [];
@@ -71,11 +82,19 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
         return;
       }
 
-      // Get the search URL for the selected location
-      const { url } = await api.getSearchUrl(selectedZupanija, selectedDistrict || undefined, propertyType);
+      // Get the search URL for the selected location (only for njuskalo)
+      // For crozilla, we use the default search URL from the source
+      let searchUrlToUse: string | undefined;
       
-      // Use the generated URL to scrape, passing županija for location context
-      const response = await api.scrapeFromSearch(url, {
+      if (selectedSource === ScrapeSource.NJUSKALO) {
+        const { url } = await api.getSearchUrl(selectedZupanija, selectedDistrict || undefined, propertyType);
+        searchUrlToUse = url;
+      }
+      
+      // Use the source to scrape, passing županija for location context
+      const response = await api.scrapeFromSearch({
+        source: selectedSource,
+        searchUrl: searchUrlToUse,
         startPage,
         endPage,
         forceRescrape,
@@ -83,11 +102,12 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
       });
       
       if (response.total_listings === 0) {
-        setError("No listings found for this location.");
+        setError(`No listings found on ${response.source}.`);
         return;
       }
 
       setResult({
+        source: response.source,
         totalListings: response.total_listings,
         newListings: response.new_listings,
         existingListings: response.existing_listings,
@@ -113,18 +133,20 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
         return;
       }
 
-      const response = await api.scrapeFromSearch(searchUrl.trim(), {
+      const response = await api.scrapeFromSearch({
+        searchUrl: searchUrl.trim(),
         startPage,
         endPage,
         forceRescrape,
       });
       
       if (response.total_listings === 0) {
-        setError("No listings found on this page. Make sure it's a valid njuskalo.hr search results page.");
+        setError(`No listings found on this page. Make sure it's a valid search results page.`);
         return;
       }
 
       setResult({
+        source: response.source,
         totalListings: response.total_listings,
         newListings: response.new_listings,
         existingListings: response.existing_listings,
@@ -227,7 +249,33 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
             </div>
           ) : (
             <>
-              {/* Property Type */}
+              {/* Source Selection */}
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-2">
+                  Data Source
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {sources.map((source) => (
+                    <button
+                      key={source.id}
+                      type="button"
+                      onClick={() => setSelectedSource(source.id as ScrapeSource)}
+                      className={`px-4 py-3 rounded-lg border transition-all text-left ${
+                        selectedSource === source.id
+                          ? "border-emerald-500 bg-emerald-500/10 text-emerald-400"
+                          : "border-slate-700 bg-slate-800/50 text-slate-400 hover:border-slate-600"
+                      }`}
+                      disabled={loading}
+                    >
+                      <div className="font-medium">{source.name}</div>
+                      <div className="text-xs opacity-60">{source.domain}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Property Type - Only show for njuskalo since crozilla uses default URL */}
+              {selectedSource === ScrapeSource.NJUSKALO && (
               <div>
                 <label className="block text-sm font-medium text-slate-400 mb-2">
                   Property Type
@@ -244,8 +292,10 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
                   <option value="iznajmljivanje-kuca">🏡 Houses for Rent</option>
                 </select>
               </div>
+              )}
 
-              {/* Županija Selection */}
+              {/* Županija Selection - Only for njuskalo */}
+              {selectedSource === ScrapeSource.NJUSKALO && (
               <div>
                 <label className="block text-sm font-medium text-slate-400 mb-2">
                   Županija (County)
@@ -267,9 +317,10 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
                   ))}
                 </select>
               </div>
+              )}
 
-              {/* District Selection */}
-              {selectedZupanija && districts.length > 0 && (
+              {/* District Selection - Only for njuskalo */}
+              {selectedSource === ScrapeSource.NJUSKALO && selectedZupanija && districts.length > 0 && (
                 <div>
                   <label className="block text-sm font-medium text-slate-400 mb-2">
                     District (Optional)
@@ -289,6 +340,15 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
                   </select>
                   <p className="mt-1.5 text-xs text-slate-500">
                     {districts.length} districts available
+                  </p>
+                </div>
+              )}
+              
+              {/* Crozilla info */}
+              {selectedSource === ScrapeSource.CROZILLA && (
+                <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                  <p className="text-sm text-blue-300">
+                    <span className="font-medium">Crozilla</span> will scrape apartments for sale in Varaždinska županija using the default search URL.
                   </p>
                 </div>
               )}
@@ -386,7 +446,7 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
 
           <button
             type="submit"
-            disabled={loading || loadingLocations || !selectedZupanija}
+            disabled={loading || loadingLocations || (selectedSource === ScrapeSource.NJUSKALO && !selectedZupanija)}
             className="btn-primary w-full py-3 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (
@@ -395,14 +455,14 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
-                Scraping {selectedDistrict || selectedZupanija}...
+                Scraping from {sources.find(s => s.id === selectedSource)?.name || selectedSource}...
               </span>
             ) : (
               <span className="flex items-center justify-center gap-2">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
-                Scrape {selectedDistrict || selectedZupanija || "Location"}
+                Scrape from {sources.find(s => s.id === selectedSource)?.name || selectedSource}
               </span>
             )}
           </button>
@@ -426,7 +486,7 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
               disabled={loading}
             />
             <p className="mt-1.5 text-xs text-slate-500">
-              Paste any njuskalo.hr search results page URL
+              Paste a search results URL from njuskalo.hr or crozilla.com (auto-detected)
             </p>
           </div>
 
@@ -553,7 +613,7 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
               id="urls"
               value={urls}
               onChange={(e) => setUrls(e.target.value)}
-              placeholder="https://www.njuskalo.hr/nekretnine/stan-...&#10;https://www.njuskalo.hr/nekretnine/stan-..."
+              placeholder="https://www.njuskalo.hr/nekretnine/stan-...&#10;https://www.crozilla.com/nekretnina/12345...&#10;(Mix of njuskalo and crozilla URLs supported)"
               className="input-field w-full h-40 font-mono text-sm resize-none"
               disabled={loading}
             />
@@ -592,6 +652,11 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
             <span className="font-semibold">Job Created!</span>
+            {result.source && (
+              <span className="text-xs bg-slate-700/50 px-2 py-0.5 rounded-full">
+                {result.source}
+              </span>
+            )}
           </div>
           <p className="text-sm text-emerald-300/80">
             Found {result.totalListings} listings total

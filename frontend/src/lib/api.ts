@@ -1,4 +1,4 @@
-import type { Listing, ListingsResponse, ScrapeJob, ListingFilter } from "@/types/listing";
+import type { Listing, ListingsResponse, ScrapeJob, ListingFilter, ScrapeSource, SourceInfo } from "@/types/listing";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -294,9 +294,14 @@ class ApiClient {
     });
   }
 
+  async getScrapeSources(): Promise<{ sources: SourceInfo[] }> {
+    return this.request<{ sources: SourceInfo[] }>("/api/scrape/sources");
+  }
+
   async scrapeFromSearch(
-    searchUrl: string, 
     options: {
+      source?: ScrapeSource;
+      searchUrl?: string;
       maxPages?: number;
       startPage?: number;
       endPage?: number;
@@ -304,6 +309,7 @@ class ApiClient {
       zupanija?: string;
     } = {}
   ): Promise<{
+    source: string;
     search_url: string;
     pages_scraped: number;
     total_listings: number;
@@ -315,7 +321,8 @@ class ApiClient {
     return this.request("/api/scrape/from-search", {
       method: "POST",
       body: JSON.stringify({ 
-        search_url: searchUrl, 
+        source: options.source ?? null,
+        search_url: options.searchUrl ?? null, 
         max_pages: options.maxPages ?? 1,
         start_page: options.startPage ?? 1,
         end_page: options.endPage ?? null,
