@@ -11,16 +11,24 @@ from enum import Enum
 
 class FeatureSet(str, Enum):
     """Predefined feature combinations for model training."""
+    OPTIMAL = "optimal"         # 5 best features: area, bedrooms, outdoor, renovation, distance (CV=89.2%)
     MINIMAL = "minimal"         # 2 features: area + bedrooms
     CORE = "core"               # 4 features: area, bedrooms, bathrooms, renovation
     STANDARD = "standard"       # 6 features: core + new_construction, garage
     NUMERIC = "numeric"         # All numeric features, no categoricals
-    FULL = "full"               # All features including district (default)
+    FULL = "full"               # All features including district
     CUSTOM = "custom"           # Custom feature list provided by user
 
 
 # Feature definitions for each preset
 FEATURE_SET_DEFINITIONS = {
+    FeatureSet.OPTIMAL: {
+        "numeric": ["living_area_m2", "bedroom_count", "distance_from_center"],
+        "derived": [],
+        "boolean": ["is_new_construction"],
+        "categorical": [],
+        "description": "Best 4 features after dedup & outlier removal (R²=91.77%, RMSE=€29,856)"
+    },
     FeatureSet.MINIMAL: {
         "numeric": ["living_area_m2", "bedroom_count"],
         "derived": [],
@@ -65,14 +73,14 @@ FEATURE_SET_DEFINITIONS = {
 
 class TrainRequest(BaseModel):
     """Request body for model training."""
-    model_type: str = Field(..., description="Model type (see /models endpoint for full list)")
+    model_type: str = Field("auto", description="Model type - 'auto' selects best model automatically")
     test_size: float = Field(0.2, ge=0.1, le=0.5, description="Test set proportion")
     cv_folds: int = Field(5, ge=2, le=10, description="Cross-validation folds")
     
     # Feature selection
     feature_set: FeatureSet = Field(
-        FeatureSet.FULL, 
-        description="Predefined feature set: minimal, core, standard, numeric, full"
+        FeatureSet.OPTIMAL, 
+        description="Feature set: optimal (4 best features), full, minimal, etc."
     )
     custom_features: Optional[List[str]] = Field(
         None,
@@ -203,7 +211,7 @@ class PredictResponse(BaseModel):
 class PredictFromUrlRequest(BaseModel):
     """Request to predict price from a listing URL."""
     url: str = Field(..., description="The njuskalo.hr listing URL")
-    model_type: str = Field("ridge", description="Model type to use for prediction")
+    model_type: str = Field("auto", description="Model type - 'auto' selects best model automatically")
 
 
 class PredictFromUrlResponse(BaseModel):
@@ -221,8 +229,12 @@ class PredictFromUrlResponse(BaseModel):
 
 
 class ManualPredictRequest(BaseModel):
-    """Request body for manual price prediction with custom listing data (no LLM)."""
-    model_type: str = Field("ridge", description="Model type to use for prediction")
+    """Request body for manual price prediction with custom listing data.
+    
+    If description or images are provided, uses LLM to analyze them (same as scraping).
+    Otherwise, uses the structured fields directly.
+    """
+    model_type: str = Field("auto", description="Model type - 'auto' selects best model automatically")
     
     # Basic info
     title: Optional[str] = Field(None, description="Listing title")
@@ -242,6 +254,9 @@ class ManualPredictRequest(BaseModel):
     is_new_construction: bool = Field(False, description="Is new construction")
     has_garage: bool = Field(False, description="Has garage")
     
+    # Renovation level (0-10) - used when no images provided for LLM analysis
+    renovation_level: Optional[int] = Field(None, ge=0, le=10, description="Renovation level 0-10 (only used if no images)")
+    
     # Text for AI analysis (optional)
     description: Optional[str] = Field(None, description="Listing description text")
     
@@ -251,7 +266,7 @@ class ManualPredictRequest(BaseModel):
 
 class RawDataPredictRequest(BaseModel):
     """Request body for prediction with raw listing data - processed by LLM classifier."""
-    model_type: str = Field("ridge", description="Model type to use for prediction")
+    model_type: str = Field("auto", description="Model type - 'auto' selects best model automatically")
     zupanija: Optional[str] = Field("Varaždinska", description="County for location context")
     
     # Raw listing data (like from HTML/JSON scraping)

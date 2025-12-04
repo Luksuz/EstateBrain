@@ -8,18 +8,21 @@ const FEATURE_LABELS: Record<string, string> = {
   // Target
   price_eur: "Price (€)",
   
-  // Numeric features (sorted by correlation)
-  living_area_m2: "Living Area (m²)",     // 0.844
-  bedroom_count: "Bedrooms",               // 0.646
-  bathroom_count: "Bathrooms",             // 0.630
-  year_built: "Year Built",                // 0.416
+  // Optimal features (R²=91.77%)
+  living_area_m2: "Living Area (m²)",     // Primary predictor
+  bedroom_count: "Bedrooms",               // Room count
+  distance_from_center: "Distance (km)",   // Location factor
+  is_new_construction: "New Construction", // New vs resale
+  
+  // Additional features (for display)
+  bathroom_count: "Bathrooms",
+  year_built: "Year Built",
+  outdoor_area_m2: "Outdoor Area (m²)",
+  renovation_level: "Renovation Level",
   
   // Derived binary features
-  has_garage: "Has Garage",                // 0.536
-  has_modern_heating: "Modern Heating",    // 0.352
-  
-  // Boolean
-  is_new_construction: "New Construction", // 0.402
+  has_garage: "Has Garage",
+  has_modern_heating: "Modern Heating",
   
   // Neighborhood one-hot encoded features (consolidated)
   "location_district_Kućan Marof": "📍 Kućan Marof",
@@ -69,29 +72,6 @@ export default function AnalyticsPage() {
   const [training, setTraining] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Model training form
-  const [selectedModel, setSelectedModel] = useState("ridge");
-  const [modelParams, setModelParams] = useState({
-    // Regularization
-    alpha: 1.0,
-    l1_ratio: 0.5,
-    // Tree params
-    max_depth: 10,
-    n_estimators: 100,
-    learning_rate: 0.1,
-    // KNN
-    n_neighbors: 5,
-    // SVR
-    C: 1.0,
-    kernel: "rbf",
-    // MLP (Neural Network)
-    hidden_layer_1: 100,
-    hidden_layer_2: 50,
-    activation: "relu",
-    learning_rate_init: 0.001,
-    max_iter: 500,
-  });
-  
   // Data filters
   const [dataFilters, setDataFilters] = useState({
     exclude_new_construction: false,
@@ -128,8 +108,7 @@ export default function AnalyticsPage() {
       setTraining(true);
       setError(null);
       const result = await api.trainModel({
-        model_type: selectedModel,
-        ...modelParams,
+        model_type: "auto", // Auto-selects best model
         // Data filters
         exclude_new_construction: dataFilters.exclude_new_construction,
         only_new_construction: dataFilters.only_new_construction,
@@ -410,275 +389,34 @@ export default function AnalyticsPage() {
               </div>
             </div>
             
-            <div className="grid lg:grid-cols-3 gap-6">
-              {/* Model Selection */}
+            <div className="grid lg:grid-cols-2 gap-6">
+              {/* Train Model */}
               <div className="glass rounded-2xl p-6">
-                <h3 className="text-sm text-slate-400 mb-4">Select Model</h3>
-                <div className="space-y-2 max-h-80 overflow-y-auto pr-2">
-                  {/* Group by category */}
-                  {['linear', 'tree', 'other', 'neural_network'].map(category => {
-                    const categoryModels = availableModels.filter(m => m.category === category);
-                    if (categoryModels.length === 0) return null;
-                    const categoryLabel = category === 'linear' ? '📈 Linear' : category === 'tree' ? '🌲 Tree-Based' : category === 'neural_network' ? '🧠 Neural Networks' : '🔮 Other';
-                    return (
-                      <div key={category} className="mb-3">
-                        <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">{categoryLabel}</p>
-                        {categoryModels.map(model => (
-                          <label 
-                            key={model.type}
-                            className={`flex items-center gap-3 p-2.5 rounded-lg cursor-pointer transition-all mb-1 ${
-                              selectedModel === model.type 
-                                ? 'bg-emerald-500/20 border border-emerald-500/40' 
-                                : 'bg-slate-800/30 border border-transparent hover:border-slate-600/50'
-                            }`}
-                          >
-                            <input
-                              type="radio"
-                              name="model"
-                              value={model.type}
-                              checked={selectedModel === model.type}
-                              onChange={(e) => setSelectedModel(e.target.value)}
-                              className="hidden"
-                            />
-                            <div className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
-                              selectedModel === model.type ? 'border-emerald-400' : 'border-slate-500'
-                            }`}>
-                              {selectedModel === model.type && (
-                                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <p className="text-sm font-medium text-white truncate">{model.name}</p>
-                                {model.recommended && (
-                                  <span className="px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/20 text-emerald-400 rounded">
-                                    ★
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-xs text-slate-500 truncate">{model.description}</p>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Model Parameters */}
-              <div className="glass rounded-2xl p-6">
-                <h3 className="text-sm text-slate-400 mb-4">Parameters</h3>
-                <div className="space-y-4 max-h-64 overflow-y-auto">
-                  {/* No params models */}
-                  {(selectedModel === "linear_regression" || selectedModel === "bayesian_ridge") && (
-                    <p className="text-sm text-slate-500 italic">No parameters needed</p>
-                  )}
-                  
-                  {/* Regularization params (Ridge, Lasso, ElasticNet) */}
-                  {(selectedModel === "ridge" || selectedModel === "lasso" || selectedModel === "elastic_net") && (
-                    <div>
-                      <label className="text-xs text-slate-500 mb-1 block">Alpha (Regularization)</label>
-                      <input
-                        type="number"
-                        value={modelParams.alpha}
-                        onChange={(e) => setModelParams(p => ({ ...p, alpha: parseFloat(e.target.value) || 1.0 }))}
-                        className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                        min={0.001}
-                        max={100}
-                        step={0.1}
-                      />
-                    </div>
-                  )}
-                  {selectedModel === "elastic_net" && (
-                    <div>
-                      <label className="text-xs text-slate-500 mb-1 block">L1 Ratio (0=Ridge, 1=Lasso)</label>
-                      <input
-                        type="number"
-                        value={modelParams.l1_ratio}
-                        onChange={(e) => setModelParams(p => ({ ...p, l1_ratio: parseFloat(e.target.value) || 0.5 }))}
-                        className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                        min={0}
-                        max={1}
-                        step={0.1}
-                      />
-                    </div>
-                  )}
-                  
-                  {/* Tree depth params */}
-                  {(selectedModel === "decision_tree" || selectedModel === "random_forest" || selectedModel === "xgboost" || selectedModel === "gradient_boosting") && (
-                    <div>
-                      <label className="text-xs text-slate-500 mb-1 block">Max Depth</label>
-                      <input
-                        type="number"
-                        value={modelParams.max_depth}
-                        onChange={(e) => setModelParams(p => ({ ...p, max_depth: parseInt(e.target.value) || 10 }))}
-                        className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                        min={1}
-                        max={50}
-                      />
-                    </div>
-                  )}
-                  
-                  {/* Ensemble params */}
-                  {(selectedModel === "random_forest" || selectedModel === "xgboost" || selectedModel === "gradient_boosting") && (
-                    <div>
-                      <label className="text-xs text-slate-500 mb-1 block">N Estimators (Trees)</label>
-                      <input
-                        type="number"
-                        value={modelParams.n_estimators}
-                        onChange={(e) => setModelParams(p => ({ ...p, n_estimators: parseInt(e.target.value) || 100 }))}
-                        className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                        min={10}
-                        max={500}
-                      />
-                    </div>
-                  )}
-                  
-                  {/* Boosting learning rate */}
-                  {(selectedModel === "xgboost" || selectedModel === "gradient_boosting") && (
-                    <div>
-                      <label className="text-xs text-slate-500 mb-1 block">Learning Rate</label>
-                      <input
-                        type="number"
-                        value={modelParams.learning_rate}
-                        onChange={(e) => setModelParams(p => ({ ...p, learning_rate: parseFloat(e.target.value) || 0.1 }))}
-                        className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                        min={0.01}
-                        max={1}
-                        step={0.01}
-                      />
-                    </div>
-                  )}
-                  
-                  {/* KNN params */}
-                  {selectedModel === "knn" && (
-                    <div>
-                      <label className="text-xs text-slate-500 mb-1 block">K Neighbors</label>
-                      <input
-                        type="number"
-                        value={modelParams.n_neighbors}
-                        onChange={(e) => setModelParams(p => ({ ...p, n_neighbors: parseInt(e.target.value) || 5 }))}
-                        className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                        min={1}
-                        max={50}
-                      />
-                    </div>
-                  )}
-                  
-                  {/* SVR params */}
-                  {selectedModel === "svr" && (
-                    <>
-                      <div>
-                        <label className="text-xs text-slate-500 mb-1 block">C (Regularization)</label>
-                        <input
-                          type="number"
-                          value={modelParams.C}
-                          onChange={(e) => setModelParams(p => ({ ...p, C: parseFloat(e.target.value) || 1.0 }))}
-                          className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                          min={0.01}
-                          max={100}
-                          step={0.1}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs text-slate-500 mb-1 block">Kernel</label>
-                        <select
-                          value={modelParams.kernel}
-                          onChange={(e) => setModelParams(p => ({ ...p, kernel: e.target.value }))}
-                          className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                        >
-                          <option value="rbf">RBF (Gaussian)</option>
-                          <option value="linear">Linear</option>
-                          <option value="poly">Polynomial</option>
-                        </select>
-                      </div>
-                    </>
-                  )}
-                  
-                  {/* MLP (Neural Network) params */}
-                  {selectedModel === "mlp" && (
-                    <>
-                      <div>
-                        <label className="text-xs text-slate-500 mb-1 block">Hidden Layer 1 (Neurons)</label>
-                        <input
-                          type="number"
-                          value={modelParams.hidden_layer_1}
-                          onChange={(e) => setModelParams(p => ({ ...p, hidden_layer_1: parseInt(e.target.value) || 100 }))}
-                          className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                          min={10}
-                          max={500}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs text-slate-500 mb-1 block">Hidden Layer 2 (0 to disable)</label>
-                        <input
-                          type="number"
-                          value={modelParams.hidden_layer_2}
-                          onChange={(e) => setModelParams(p => ({ ...p, hidden_layer_2: parseInt(e.target.value) || 0 }))}
-                          className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                          min={0}
-                          max={500}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs text-slate-500 mb-1 block">Activation Function</label>
-                        <select
-                          value={modelParams.activation}
-                          onChange={(e) => setModelParams(p => ({ ...p, activation: e.target.value }))}
-                          className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                        >
-                          <option value="relu">ReLU (Recommended)</option>
-                          <option value="tanh">Tanh</option>
-                          <option value="logistic">Sigmoid</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="text-xs text-slate-500 mb-1 block">Learning Rate</label>
-                        <input
-                          type="number"
-                          value={modelParams.learning_rate_init}
-                          onChange={(e) => setModelParams(p => ({ ...p, learning_rate_init: parseFloat(e.target.value) || 0.001 }))}
-                          className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                          min={0.0001}
-                          max={0.1}
-                          step={0.0001}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs text-slate-500 mb-1 block">Max Iterations</label>
-                        <input
-                          type="number"
-                          value={modelParams.max_iter}
-                          onChange={(e) => setModelParams(p => ({ ...p, max_iter: parseInt(e.target.value) || 500 }))}
-                          className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-                          min={100}
-                          max={2000}
-                        />
-                      </div>
-                    </>
-                  )}
-                </div>
+                <h3 className="text-sm text-slate-400 mb-4">AI Model Training</h3>
+                <p className="text-slate-500 text-sm mb-6">
+                  The system automatically selects the best model based on your data filters. 
+                  Uses 4 optimized features: area, bedrooms, renovation level, and distance from center.
+                </p>
                 
                 <button
                   onClick={handleTrainModel}
                   disabled={training}
-                  className="mt-6 w-full py-3 px-4 bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="w-full py-4 px-4 bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {training ? (
                     <>
-                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                       </svg>
-                      Training...
+                      Training AI Model...
                     </>
                   ) : (
                     <>
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                       </svg>
-                      Train Model
+                      Train Price Prediction Model
                     </>
                   )}
                 </button>
@@ -769,7 +507,7 @@ export default function AnalyticsPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                       </svg>
                     </div>
-                    <p className="text-sm text-slate-500">Select a model and click Train to see results</p>
+                    <p className="text-sm text-slate-500">Click Train to see model performance results</p>
                   </div>
                 )}
               </div>

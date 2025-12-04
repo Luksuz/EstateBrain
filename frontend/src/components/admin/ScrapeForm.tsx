@@ -87,7 +87,7 @@ export function ScrapeForm({ onJobCreated }: ScrapeFormProps) {
       let searchUrlToUse: string | undefined;
       
       if (selectedSource === ScrapeSource.NJUSKALO) {
-        const { url } = await api.getSearchUrl(selectedZupanija, selectedDistrict || undefined, propertyType);
+      const { url } = await api.getSearchUrl(selectedZupanija, selectedDistrict || undefined, propertyType);
         searchUrlToUse = url;
       }
       

@@ -63,7 +63,7 @@ type InputMode = "url" | "manual" | "raw";
 export default function PredictPage() {
   const [mode, setMode] = useState<InputMode>("url");
   const [url, setUrl] = useState("");
-  const [modelType, setModelType] = useState("ridge");
+  const [modelType] = useState("auto"); // Auto-selects best model based on data
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PredictFromUrlResponse | null>(null);
@@ -72,7 +72,7 @@ export default function PredictPage() {
   
   // Manual input fields (simple mode - no LLM)
   const [manualData, setManualData] = useState<ManualPredictRequest>({
-    model_type: "ridge",
+    model_type: "auto",
     living_area_m2: 70,
     bedroom_count: 2,
     bathroom_count: 1,
@@ -90,7 +90,7 @@ export default function PredictPage() {
   
   // Raw data input (LLM mode)
   const [rawData, setRawData] = useState<RawDataPredictRequest>({
-    model_type: "ridge",
+    model_type: "auto",
     zupanija: "Varaždinska",
     title: "",
     price: "",
@@ -264,7 +264,7 @@ export default function PredictPage() {
         });
       }
       
-      setModelType(newModelType);
+      // Model type is tracked in result.model_used
     } catch (err) {
       console.error("Re-predict failed:", err);
       setError(err instanceof Error ? err.message : "Failed to re-predict");
@@ -715,31 +715,6 @@ export default function PredictPage() {
             </div>
           )}
 
-          {/* Model Selection */}
-          <div className="flex items-center gap-4 pt-2 border-t border-slate-700/50">
-            <label className="text-sm text-slate-400">Model:</label>
-            <div className="flex gap-2 flex-wrap">
-              {[
-                { value: "ridge", label: "Ridge" },
-                { value: "random_forest", label: "Random Forest" },
-                { value: "xgboost", label: "XGBoost" },
-                { value: "mlp", label: "Neural Network" },
-              ].map((model) => (
-                <button
-                  key={model.value}
-                  onClick={() => setModelType(model.value)}
-                  className={`px-3 py-1.5 text-sm rounded-lg transition-all ${
-                    modelType === model.value
-                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                      : "bg-slate-800/50 text-slate-400 border border-slate-700/50 hover:text-white"
-                  }`}
-                >
-                  {model.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
           {/* Predict Button */}
           <button
             onClick={handlePredict}
@@ -955,6 +930,18 @@ export default function PredictPage() {
                     <div className="bg-slate-800/30 rounded-lg p-3">
                       <div className="text-xs text-slate-500">Outdoor Area</div>
                       <div className="text-white font-semibold">{result.features_used.outdoor_area_m2} m²</div>
+                    </div>
+                  )}
+                  {result.features_used.renovation_level !== undefined && result.features_used.renovation_level > 0 && (
+                    <div className="bg-slate-800/30 rounded-lg p-3">
+                      <div className="text-xs text-slate-500">Renovation</div>
+                      <div className="text-white font-semibold">{result.features_used.renovation_level}/10</div>
+                    </div>
+                  )}
+                  {result.features_used.distance_from_center !== undefined && result.features_used.distance_from_center > 0 && (
+                    <div className="bg-slate-800/30 rounded-lg p-3">
+                      <div className="text-xs text-slate-500">Distance</div>
+                      <div className="text-white font-semibold">{result.features_used.distance_from_center.toFixed(1)} km</div>
                     </div>
                   )}
                   <div className="bg-slate-800/30 rounded-lg p-3">
@@ -1266,7 +1253,7 @@ export default function PredictPage() {
                 onClick={() => {
                   setRawResult(null);
                   setRawData({
-                    model_type: "ridge",
+                    model_type: "auto",
                     zupanija: "Varaždinska",
                     title: "",
                     price: "",

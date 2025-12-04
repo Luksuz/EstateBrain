@@ -157,21 +157,11 @@ def start_scheduler():
         max_instances=1,
     )
     
-    # Run first scrape immediately on startup
-    scheduler.add_job(
-        scheduled_scrape_varazdin,
-        id="scrape_varazdin_startup",
-        name="Initial scrape on startup",
-        replace_existing=True,
-    )
-    
     scheduler.start()
     
     print("\n" + "="*60)
     print("[Scheduler] Started APScheduler")
     print("[Scheduler] Jobs scheduled:")
-    print("  - IMMEDIATE: Running first scrape now")
-    print("  - Every 12 hours (interval)")
     print("  - At 6:00 AM and 6:00 PM daily (cron)")
     print(f"  - Scraping: {VARAZDIN_SEARCH_URL}")
     print("  - Pages: First 2 pages only")

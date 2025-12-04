@@ -123,6 +123,7 @@ export interface ManualPredictRequest {
   year_built?: number;
   is_new_construction?: boolean;
   has_garage?: boolean;
+  renovation_level?: number;  // 0-10, only used if no images provided
   description?: string;
   images?: string[];  // Base64 encoded compressed images
 }
@@ -214,6 +215,8 @@ export interface PredictFromUrlResponse {
     bathroom_count: number;
     year_built?: number;
     outdoor_area_m2?: number;
+    renovation_level?: number;
+    distance_from_center?: number;
     is_new_construction: boolean;
     has_garage?: boolean;
     location: string;

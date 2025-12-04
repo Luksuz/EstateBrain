@@ -152,7 +152,7 @@ export default function DealsPage() {
   const [error, setError] = useState<string | null>(null);
   
   // Filters
-  const [modelType, setModelType] = useState("ridge");
+  const [modelType] = useState("auto"); // Auto-selects best model
   const [excludeNew, setExcludeNew] = useState(false);
   const [district, setDistrict] = useState("");
   const [topN, setTopN] = useState(10);
@@ -215,24 +215,7 @@ export default function DealsPage() {
           Analysis Settings
         </h2>
         
-        <div className="grid md:grid-cols-4 gap-4 mb-4">
-          {/* Model selection */}
-          <div>
-            <label className="block text-xs text-slate-400 mb-1">Prediction Model</label>
-            <select
-              value={modelType}
-              onChange={(e) => setModelType(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-white text-sm focus:border-emerald-500/50 focus:outline-none"
-            >
-              <option value="ridge">Ridge Regression</option>
-              <option value="random_forest">Random Forest</option>
-              <option value="gradient_boosting">Gradient Boosting</option>
-              <option value="xgboost">XGBoost</option>
-              <option value="mlp">Neural Network (MLP)</option>
-              <option value="linear_regression">Linear Regression</option>
-            </select>
-          </div>
-          
+        <div className="grid md:grid-cols-3 gap-4 mb-4">
           {/* Neighborhood */}
           <div>
             <label className="block text-xs text-slate-400 mb-1">Neighborhood</label>

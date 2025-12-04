@@ -471,15 +471,30 @@ async def predict_from_url(request: PredictFromUrlRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to scrape listing: {str(e)}")
     
+    # Calculate distance from center based on district
+    district = listing_data.location_district or 'Varaždin'
+    if district == 'Varaždin':
+        distance_from_center = 0.5  # City center
+    elif district in ['Novi Marof', 'Ivanec', 'Ludbreg']:
+        distance_from_center = 15.0  # Other towns
+    else:
+        distance_from_center = 5.0  # Small settlements
+    
+    # Use actual distance if available from scraping
+    if listing_data.distance_from_center and listing_data.distance_from_center > 0:
+        distance_from_center = listing_data.distance_from_center
+    
     # Build features from parsed listing
     features = build_features_from_request(
         living_area_m2=listing_data.living_area_m2 or 0,
         bedroom_count=listing_data.bedroom_count or 1,
         bathroom_count=listing_data.bathroom_count or 1,
         outdoor_area_m2=listing_data.outdoor_area_m2,
+        renovation_level=listing_data.renovation_level,
+        distance_from_center=distance_from_center,
         is_new_construction=listing_data.is_new_construction or False,
         parking_type=listing_data.parking_type.value if listing_data.parking_type else 'UNKNOWN',
-        location_district=listing_data.location_district,
+        location_district=district,
     )
     
     try:
@@ -517,6 +532,8 @@ async def predict_from_url(request: PredictFromUrlRequest):
             "bedroom_count": features['bedroom_count'],
             "bathroom_count": features['bathroom_count'],
             "outdoor_area_m2": features.get('outdoor_area_m2', 0),
+            "renovation_level": features.get('renovation_level', 0),
+            "distance_from_center": features.get('distance_from_center', 0),
             "is_new_construction": bool(features['is_new_construction']),
             "has_garage": features.get('parking_type') == 'GARAGE',
             "location": features['location_district'],
@@ -532,7 +549,10 @@ async def predict_manual(request: ManualPredictRequest):
     Predict price from manually input listing data.
     
     This allows users to input listing details directly without needing a URL.
+    If description or images are provided, uses LLM to analyze them (like when scraping).
     """
+    from ..services.classifier import ListingClassifier
+    
     try:
         model_type_enum = ModelType(request.model_type)
     except ValueError:
@@ -560,15 +580,104 @@ async def predict_manual(request: ManualPredictRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model training failed: {str(e)}")
     
-    features = build_features_from_request(
-        living_area_m2=request.living_area_m2,
-        bedroom_count=request.bedroom_count,
-        bathroom_count=request.bathroom_count,
-        outdoor_area_m2=request.outdoor_area_m2,
-        is_new_construction=request.is_new_construction,
-        has_garage=request.has_garage,
-        location_district=request.location_district or 'Varaždin',
-    )
+    # Calculate distance from center based on district
+    district = request.location_district or 'Varaždin'
+    if district == 'Varaždin':
+        distance_from_center = 0.5  # City center
+    elif district in ['Novi Marof', 'Ivanec', 'Ludbreg']:
+        distance_from_center = 15.0  # Other towns
+    else:
+        distance_from_center = 5.0  # Small settlements
+    
+    # Check if we should use LLM classifier (if description or images provided)
+    use_llm = bool(request.description) or bool(request.images)
+    
+    if use_llm:
+        # Use LLM classifier to analyze description/images (same as scraping)
+        raw_data = {
+            "title": request.title or f"{request.living_area_m2}m² apartment",
+            "description": request.description or "",
+            "highlighted_attributes": {
+                "Stambena površina": f"{request.living_area_m2} m²",
+                "Broj soba": str(request.bedroom_count),
+                "Broj kupaonica": str(request.bathroom_count),
+            },
+            "basic_details": {},
+        }
+        
+        if request.outdoor_area_m2:
+            raw_data["highlighted_attributes"]["Balkon/Terasa"] = f"{request.outdoor_area_m2} m²"
+        if request.year_built:
+            raw_data["basic_details"]["Godina izgradnje"] = str(request.year_built)
+        if request.actual_price:
+            raw_data["price"] = f"€{request.actual_price:,.0f}"
+        
+        # Add images if provided
+        if request.images:
+            raw_data["images"] = [
+                {"src": img} if img.startswith("http") else {"src": img}
+                for img in request.images[:20]
+            ]
+        else:
+            raw_data["images"] = []
+        
+        # Get location context
+        location_context = None
+        if request.location_district:
+            location_context = {
+                "zupanija": "Varaždinska",
+                "city": "Varaždin",
+                "districts": [request.location_district],
+            }
+        
+        # Run LLM classifier
+        classifier = ListingClassifier()
+        
+        try:
+            classified = await classifier.classify(raw_data, location_context)
+            
+            # Use LLM-classified features (renovation_level comes from image analysis!)
+            features = build_features_from_request(
+                living_area_m2=classified.dimensions.description_living_area_m2 or classified.dimensions.metadata_area_m2 or request.living_area_m2,
+                bedroom_count=classified.building_specs.bedroom_count or request.bedroom_count,
+                bathroom_count=classified.building_specs.bathroom_count or request.bathroom_count,
+                outdoor_area_m2=classified.dimensions.outdoor_area_m2 or request.outdoor_area_m2,
+                renovation_level=classified.condition.renovation_level or 8,
+                distance_from_center=distance_from_center,
+                is_new_construction=classified.building_specs.is_new_construction or request.is_new_construction,
+                parking_type=classified.building_specs.parking_type.value if classified.building_specs.parking_type else ('GARAGE' if request.has_garage else 'UNKNOWN'),
+                location_district=classified.location.district or request.location_district or 'Varaždin',
+            )
+        except Exception as e:
+            # Fallback to manual fields if LLM fails
+            print(f"[ML] LLM classification failed, using manual fields: {e}")
+            renovation = request.renovation_level if request.renovation_level is not None else (9 if request.is_new_construction else 7)
+            features = build_features_from_request(
+                living_area_m2=request.living_area_m2,
+                bedroom_count=request.bedroom_count,
+                bathroom_count=request.bathroom_count,
+                outdoor_area_m2=request.outdoor_area_m2,
+                renovation_level=renovation,
+                distance_from_center=distance_from_center,
+                is_new_construction=request.is_new_construction,
+                has_garage=request.has_garage,
+                location_district=request.location_district or 'Varaždin',
+            )
+    else:
+        # Use manual fields directly (no LLM)
+        # Use user-provided renovation_level, or default based on construction type
+        renovation = request.renovation_level if request.renovation_level is not None else (9 if request.is_new_construction else 7)
+        features = build_features_from_request(
+            living_area_m2=request.living_area_m2,
+            bedroom_count=request.bedroom_count,
+            bathroom_count=request.bathroom_count,
+            outdoor_area_m2=request.outdoor_area_m2,
+            renovation_level=renovation,
+            distance_from_center=distance_from_center,
+            is_new_construction=request.is_new_construction,
+            has_garage=request.has_garage,
+            location_district=request.location_district or 'Varaždin',
+        )
     
     try:
         predicted_price = ml_service.predict(model_type_enum, features)
@@ -605,6 +714,8 @@ async def predict_manual(request: ManualPredictRequest):
             "bedroom_count": features['bedroom_count'],
             "bathroom_count": features['bathroom_count'],
             "outdoor_area_m2": features['outdoor_area_m2'],
+            "renovation_level": features.get('renovation_level', 0),
+            "distance_from_center": features.get('distance_from_center', 0),
             "is_new_construction": bool(features['is_new_construction']),
             "has_garage": bool(features['has_garage']),
             "location": features['location_district'],
@@ -690,15 +801,26 @@ async def predict_from_raw_data(request: RawDataPredictRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM classification failed: {str(e)}")
     
-    # Extract features for ML prediction
+    # Calculate distance from center based on district
+    district = classified.location.district or classified.location.city or 'Unknown'
+    if district == 'Varaždin':
+        distance_from_center = 0.5  # City center
+    elif district in ['Novi Marof', 'Ivanec', 'Ludbreg']:
+        distance_from_center = 15.0  # Other towns
+    else:
+        distance_from_center = 5.0  # Small settlements
+    
+    # Extract features for ML prediction (renovation_level comes from LLM image analysis!)
     features = build_features_from_request(
         living_area_m2=classified.dimensions.description_living_area_m2 or classified.dimensions.metadata_area_m2 or 0,
         bedroom_count=classified.building_specs.bedroom_count or 1,
         bathroom_count=classified.building_specs.bathroom_count or 1,
         outdoor_area_m2=classified.dimensions.outdoor_area_m2,
+        renovation_level=classified.condition.renovation_level,
+        distance_from_center=distance_from_center,
         is_new_construction=classified.building_specs.is_new_construction or False,
         parking_type=classified.building_specs.parking_type.value if classified.building_specs.parking_type else 'UNKNOWN',
-        location_district=classified.location.district or classified.location.city or 'Unknown',
+        location_district=district,
     )
     
     try:
@@ -783,6 +905,8 @@ async def predict_from_raw_data(request: RawDataPredictRequest):
             "bedroom_count": features['bedroom_count'],
             "bathroom_count": features['bathroom_count'],
             "outdoor_area_m2": features['outdoor_area_m2'],
+            "renovation_level": features.get('renovation_level', 0),
+            "distance_from_center": features.get('distance_from_center', 0),
             "is_new_construction": bool(features['is_new_construction']),
             "has_garage": features.get('parking_type') == 'GARAGE',
             "location": features['location_district'],
@@ -833,6 +957,8 @@ async def repredict_with_model(request: RepredictRequest):
         bedroom_count=request.features.get('bedroom_count', 1),
         bathroom_count=request.features.get('bathroom_count', 1),
         outdoor_area_m2=request.features.get('outdoor_area_m2', 0),
+        renovation_level=request.features.get('renovation_level', 8),
+        distance_from_center=request.features.get('distance_from_center', 1.0),
         is_new_construction=request.features.get('is_new_construction', False),
         has_garage=request.features.get('has_garage', False),
         location_district=request.features.get('location') or request.features.get('location_district') or 'Unknown',
@@ -872,7 +998,7 @@ async def repredict_with_model(request: RepredictRequest):
 
 @router.get("/deals", response_model=DealsResponse)
 async def analyze_deals(
-    model_type: str = Query("ridge", description="Model type to use for predictions"),
+    model_type: str = Query("auto", description="Model type - 'auto' selects best model automatically"),
     min_price: Optional[float] = Query(None),
     max_price: Optional[float] = Query(None),
     exclude_new_construction: bool = Query(False),

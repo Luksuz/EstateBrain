@@ -11,6 +11,53 @@ from .ml_service import get_ml_service, ModelType
 from ..models.ml import DealAnalysis, SimilarListing
 
 
+def remove_outliers_iqr(df: pd.DataFrame, column: str, threshold: float = 1.5) -> pd.DataFrame:
+    """Remove outliers using IQR method."""
+    if column not in df.columns or df[column].isna().all():
+        return df
+    Q1 = df[column].quantile(0.25)
+    Q3 = df[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower = Q1 - threshold * IQR
+    upper = Q3 + threshold * IQR
+    return df[(df[column] >= lower) & (df[column] <= upper)]
+
+
+def apply_statistical_outlier_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply IQR-based outlier removal for cleaner ML training data.
+    
+    Removes outliers based on:
+    - price_eur (IQR 1.5x)
+    - living_area_m2 (IQR 1.5x)
+    - price_per_m2 (IQR 1.5x)
+    - distance_from_center (IQR 1.5x)
+    """
+    if len(df) == 0:
+        return df
+    
+    df = df.copy()
+    
+    # Price outliers
+    df = remove_outliers_iqr(df, 'price_eur', threshold=1.5)
+    
+    # Area outliers
+    df = remove_outliers_iqr(df, 'living_area_m2', threshold=1.5)
+    
+    # Price per m² outliers
+    if len(df) > 0:
+        df['price_per_m2'] = df['price_eur'] / df['living_area_m2']
+        df = remove_outliers_iqr(df, 'price_per_m2', threshold=1.5)
+        df = df.drop(columns=['price_per_m2'])
+    
+    # Distance outliers (only if column exists and has values)
+    if 'distance_from_center' in df.columns:
+        df_with_dist = df[df['distance_from_center'].notna()]
+        if len(df_with_dist) > 0:
+            df = remove_outliers_iqr(df, 'distance_from_center', threshold=1.5)
+    
+    return df
+
+
 async def get_filtered_listings(
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
@@ -19,19 +66,23 @@ async def get_filtered_listings(
     location_district: Optional[str] = None,
     exclude_new_construction: bool = False,
     only_new_construction: bool = False,
+    apply_outlier_filters: bool = True,
 ) -> List[Dict]:
     """Fetch listings from database with optional filters.
     
-    Always filters out outliers:
+    Always filters out invalid data:
     - price_eur < 10000 (invalid/placeholder prices)
     - living_area_m2 < 10 (invalid areas)
+    
+    When apply_outlier_filters=True (default), also removes statistical outliers:
+    - Price, area, price/m², distance outliers using IQR 1.5x method
     """
     supabase = SupabaseService()
     
     # Build query
     query = supabase.client.table("listings_v2").select("*")
     
-    # Always filter out outliers (invalid data)
+    # Always filter out invalid data
     query = query.gte("price_eur", 10000)  # Min €10k
     query = query.gte("living_area_m2", 10)  # Min 10m²
     
@@ -57,7 +108,19 @@ async def get_filtered_listings(
     query = query.not_.is_("price_eur", "null")
     
     result = query.execute()
-    return result.data
+    data = result.data
+    
+    # Apply statistical outlier filters if requested
+    if apply_outlier_filters and len(data) > 0:
+        df = pd.DataFrame(data)
+        original_count = len(df)
+        df = apply_statistical_outlier_filters(df)
+        filtered_count = len(df)
+        if original_count != filtered_count:
+            print(f"[ML] Outlier filtering: {original_count} → {filtered_count} listings ({filtered_count/original_count*100:.1f}% retained)")
+        data = df.to_dict('records')
+    
+    return data
 
 
 def calculate_deal_score(difference_pct: float) -> str:
@@ -175,6 +238,8 @@ def build_features_from_request(
     bedroom_count: int,
     bathroom_count: int,
     outdoor_area_m2: Optional[float] = None,
+    renovation_level: Optional[int] = None,
+    distance_from_center: Optional[float] = None,
     is_new_construction: bool = False,
     has_garage: bool = False,
     location_district: Optional[str] = None,
@@ -186,6 +251,8 @@ def build_features_from_request(
         'bedroom_count': bedroom_count,
         'bathroom_count': bathroom_count,
         'outdoor_area_m2': outdoor_area_m2 or 0,
+        'renovation_level': renovation_level or (9 if is_new_construction else 7),
+        'distance_from_center': distance_from_center or 5.0,
         'is_new_construction': 1.0 if is_new_construction else 0.0,
         'has_garage': 1.0 if has_garage else 0.0,
         'location_district': location_district or 'Unknown',
